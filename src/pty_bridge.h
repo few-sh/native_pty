@@ -27,7 +27,8 @@ void pty_init();
 // Spawn a new process with PTY
 // Returns a pointer to PtyContext on success, NULL on failure
 // If envp is NULL, uses the current process environment
-PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[], PtyDataCallback callback, PtyExitCallback exit_callback);
+// If cwd is NULL, uses the current working directory
+PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[], const char* cwd, PtyDataCallback callback, PtyExitCallback exit_callback);
 
 // Write data to the PTY
 int pty_write(PtyContext* ctx, const uint8_t* data, int length);

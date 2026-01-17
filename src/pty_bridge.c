@@ -84,7 +84,7 @@ void pty_init() {
 }
 
 // Spawn a new process with PTY
-PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[], PtyDataCallback callback, PtyExitCallback exit_callback) {
+PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[], const char* cwd, PtyDataCallback callback, PtyExitCallback exit_callback) {
     if (command == NULL || argv == NULL || callback == NULL) {
         return NULL;
     }
@@ -141,6 +141,20 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     posix_spawn_file_actions_adddup2(&actions, slave_fd, STDERR_FILENO);
     posix_spawn_file_actions_addclose(&actions, slave_fd);
     posix_spawn_file_actions_addclose(&actions, ctx->master_fd);
+    
+    // Set working directory if specified
+    if (cwd != NULL) {
+        #ifdef __linux__
+        // Linux supports posix_spawn_file_actions_addchdir_np
+        posix_spawn_file_actions_addchdir_np(&actions, cwd);
+        #elif defined(__APPLE__)
+        // macOS also supports this function
+        posix_spawn_file_actions_addchdir_np(&actions, cwd);
+        #else
+        // For other systems, we can't easily change directory with posix_spawn
+        // This is a limitation, but we'll document it
+        #endif
+    }
     
     posix_spawnattr_t attr;
     posix_spawnattr_init(&attr);

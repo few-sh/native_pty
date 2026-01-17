@@ -155,6 +155,29 @@ void main() async {
 }
 ```
 
+### Setting Working Directory
+
+```dart
+import 'dart:io';
+import 'package:native_pty/native_pty.dart';
+
+void main() async {
+  final pty = NativePty();
+
+  pty.stream.listen((data) => stdout.write(data));
+
+  // Spawn process with custom working directory
+  pty.spawn(
+    '/bin/bash',
+    ['/bin/bash', '-c', 'pwd && ls -la'],
+    workingDirectory: '/tmp',
+  );
+
+  await Future.delayed(Duration(seconds: 1));
+  pty.close();
+}
+```
+
 ### Sending Signals to Processes
 
 ```dart
@@ -191,10 +214,11 @@ void main() async {
 - `NativePty()` - Creates a new PTY instance
 
 #### Methods
-- `bool spawn(String command, List<String> args, {Map<String, String>? environment})` - Spawns a process with the PTY
+- `bool spawn(String command, List<String> args, {Map<String, String>? environment, String? workingDirectory})` - Spawns a process with the PTY
   - `command`: Full path to the executable
   - `args`: List of arguments (including argv[0])
   - `environment`: Optional map of environment variables (if null, inherits current process environment)
+  - `workingDirectory`: Optional working directory for the process (if null, uses current directory)
   - Returns: `true` on success, `false` on failure
 
 - `int write(String data)` - Writes data to the PTY

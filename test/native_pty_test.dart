@@ -361,6 +361,83 @@ sys.stdout.flush()
       
       pty.close();
     });
+
+    test('can set custom working directory', () async {
+      final pty = NativePty();
+
+      final outputBuffer = StringBuffer();
+      pty.stream.listen((data) {
+        outputBuffer.write(data);
+      });
+
+      // Spawn bash with custom working directory
+      final success = pty.spawn(
+        '/bin/bash',
+        ['/bin/bash', '-c', 'pwd'],
+        workingDirectory: '/tmp',
+      );
+      expect(success, isTrue);
+
+      await Future.delayed(Duration(seconds: 1));
+
+      pty.close();
+
+      final output = outputBuffer.toString();
+      expect(output, contains('/tmp'));
+    });
+
+    test('uses current directory when workingDirectory is null', () async {
+      final pty = NativePty();
+
+      final outputBuffer = StringBuffer();
+      pty.stream.listen((data) {
+        outputBuffer.write(data);
+      });
+
+      // Get current directory
+      final currentDir = Directory.current.path;
+
+      // Spawn bash without custom working directory
+      final success = pty.spawn(
+        '/bin/bash',
+        ['/bin/bash', '-c', 'pwd'],
+      );
+      expect(success, isTrue);
+
+      await Future.delayed(Duration(seconds: 1));
+
+      pty.close();
+
+      final output = outputBuffer.toString();
+      expect(output, contains(currentDir));
+    });
+
+    test('can create files in custom working directory', () async {
+      final pty = NativePty();
+
+      final outputBuffer = StringBuffer();
+      pty.stream.listen((data) {
+        outputBuffer.write(data);
+      });
+
+      final testFile = 'native_pty_test_${DateTime.now().millisecondsSinceEpoch}.txt';
+
+      // Spawn bash with custom working directory and create a file
+      final success = pty.spawn(
+        '/bin/bash',
+        ['/bin/bash', '-c', 'echo "test" > $testFile && pwd && ls $testFile && rm $testFile'],
+        workingDirectory: '/tmp',
+      );
+      expect(success, isTrue);
+
+      await Future.delayed(Duration(seconds: 1));
+
+      pty.close();
+
+      final output = outputBuffer.toString();
+      expect(output, contains('/tmp'));
+      expect(output, contains(testFile));
+    });
   });
 }
 

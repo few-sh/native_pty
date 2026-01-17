@@ -25,12 +25,14 @@ typedef PtySpawnNative = ffi.Pointer<PtyContext> Function(
     ffi.Pointer<Utf8> command,
     ffi.Pointer<ffi.Pointer<Utf8>> argv,
     ffi.Pointer<ffi.Pointer<Utf8>> envp,
+    ffi.Pointer<Utf8> cwd,
     ffi.Pointer<ffi.NativeFunction<PtyDataCallbackNative>> callback,
     ffi.Pointer<ffi.NativeFunction<PtyExitCallbackNative>> exitCallback);
 typedef PtySpawn = ffi.Pointer<PtyContext> Function(
     ffi.Pointer<Utf8> command,
     ffi.Pointer<ffi.Pointer<Utf8>> argv,
     ffi.Pointer<ffi.Pointer<Utf8>> envp,
+    ffi.Pointer<Utf8> cwd,
     ffi.Pointer<ffi.NativeFunction<PtyDataCallbackNative>> callback,
     ffi.Pointer<ffi.NativeFunction<PtyExitCallbackNative>> exitCallback);
 
@@ -156,9 +158,11 @@ class NativePty {
   /// [args] is the list of arguments to pass to the command (including argv[0]).
   /// [environment] is an optional map of environment variables to set for the process.
   /// If null, the current process environment is used.
+  /// [workingDirectory] is an optional working directory for the process.
+  /// If null, the current working directory is used.
   ///
   /// Returns true if the spawn was successful, false otherwise.
-  bool spawn(String command, List<String> args, {Map<String, String>? environment}) {
+  bool spawn(String command, List<String> args, {Map<String, String>? environment, String? workingDirectory}) {
     if (_context != null) {
       throw StateError('PTY already spawned');
     }
@@ -190,8 +194,14 @@ class NativePty {
       envpPtr[envStrings.length] = ffi.nullptr;
     }
 
+    // Allocate memory for working directory if provided
+    ffi.Pointer<Utf8> cwdPtr = ffi.nullptr;
+    if (workingDirectory != null) {
+      cwdPtr = workingDirectory.toNativeUtf8(allocator: calloc);
+    }
+
     try {
-      _context = _ptySpawn(commandPtr, argvPtr, envpPtr, _nativeCallback.nativeFunction, _nativeExitCallback.nativeFunction);
+      _context = _ptySpawn(commandPtr, argvPtr, envpPtr, cwdPtr, _nativeCallback.nativeFunction, _nativeExitCallback.nativeFunction);
 
       if (_context == null || _context == ffi.nullptr) {
         return false;
@@ -212,6 +222,11 @@ class NativePty {
           calloc.free(envpPtr[i]);
         }
         calloc.free(envpPtr);
+      }
+
+      // Clean up working directory memory if allocated
+      if (cwdPtr != ffi.nullptr) {
+        calloc.free(cwdPtr);
       }
     }
   }
