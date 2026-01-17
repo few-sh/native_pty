@@ -13,6 +13,10 @@ typedef PtyDataCallbackNative = ffi.Void Function(
 typedef PtyDataCallback = void Function(
     ffi.Pointer<ffi.Uint8> data, int length);
 
+// Callback signature for process exit notification
+typedef PtyExitCallbackNative = ffi.Void Function(ffi.Int32 exitCode);
+typedef PtyExitCallback = void Function(int exitCode);
+
 // Native function signatures
 typedef PtyInitNative = ffi.Void Function();
 typedef PtyInit = void Function();
@@ -21,12 +25,14 @@ typedef PtySpawnNative = ffi.Pointer<PtyContext> Function(
     ffi.Pointer<Utf8> command,
     ffi.Pointer<ffi.Pointer<Utf8>> argv,
     ffi.Pointer<ffi.Pointer<Utf8>> envp,
-    ffi.Pointer<ffi.NativeFunction<PtyDataCallbackNative>> callback);
+    ffi.Pointer<ffi.NativeFunction<PtyDataCallbackNative>> callback,
+    ffi.Pointer<ffi.NativeFunction<PtyExitCallbackNative>> exitCallback);
 typedef PtySpawn = ffi.Pointer<PtyContext> Function(
     ffi.Pointer<Utf8> command,
     ffi.Pointer<ffi.Pointer<Utf8>> argv,
     ffi.Pointer<ffi.Pointer<Utf8>> envp,
-    ffi.Pointer<ffi.NativeFunction<PtyDataCallbackNative>> callback);
+    ffi.Pointer<ffi.NativeFunction<PtyDataCallbackNative>> callback,
+    ffi.Pointer<ffi.NativeFunction<PtyExitCallbackNative>> exitCallback);
 
 typedef PtyWriteNative = ffi.Int32 Function(
     ffi.Pointer<PtyContext> ctx, ffi.Pointer<ffi.Uint8> data, ffi.Int32 length);
@@ -77,8 +83,10 @@ class NativePty {
 
   ffi.Pointer<PtyContext>? _context;
   late final ffi.NativeCallable<PtyDataCallbackNative> _nativeCallback;
+  late final ffi.NativeCallable<PtyExitCallbackNative> _nativeExitCallback;
   final StreamController<String> _controller = StreamController<String>();
   late final ByteConversionSink _utf8Sink;
+  final Completer<int> _exitCodeCompleter = Completer<int>();
   bool _closed = false;
 
   /// Creates a new NativePty instance.
@@ -107,6 +115,10 @@ class NativePty {
     // Set up the native callback
     _nativeCallback =
         ffi.NativeCallable<PtyDataCallbackNative>.listener(_onData);
+    
+    // Set up the exit callback
+    _nativeExitCallback =
+        ffi.NativeCallable<PtyExitCallbackNative>.listener(_onExit);
   }
 
   /// Callback for data received from the PTY.
@@ -122,6 +134,13 @@ class NativePty {
     } finally {
       // CRITICAL: Free the C memory now that Dart has copied it
       _ptyFree(data.cast<ffi.Void>());
+    }
+  }
+
+  /// Callback for process exit notification.
+  void _onExit(int exitCode) {
+    if (!_exitCodeCompleter.isCompleted) {
+      _exitCodeCompleter.complete(exitCode);
     }
   }
 
@@ -166,7 +185,7 @@ class NativePty {
     }
 
     try {
-      _context = _ptySpawn(commandPtr, argvPtr, envpPtr, _nativeCallback.nativeFunction);
+      _context = _ptySpawn(commandPtr, argvPtr, envpPtr, _nativeCallback.nativeFunction, _nativeExitCallback.nativeFunction);
 
       if (_context == null || _context == ffi.nullptr) {
         return false;
@@ -236,6 +255,14 @@ class NativePty {
   /// Data is provided as UTF-8 decoded strings.
   Stream<String> get stream => _controller.stream;
 
+  /// Future that completes with the exit code when the process terminates.
+  ///
+  /// The exit code is:
+  /// - The process exit code (0-255) if the process exited normally
+  /// - 128 + signal number if the process was killed by a signal
+  /// - -1 if the exit status could not be determined
+  Future<int> get exitCode => _exitCodeCompleter.future;
+
   /// Closes the PTY and cleans up resources.
   ///
   /// This will terminate the child process and close the PTY.
@@ -255,6 +282,7 @@ class NativePty {
     _utf8Sink.close();
     _controller.close();
     _nativeCallback.close();
+    _nativeExitCallback.close();
   }
 }
 

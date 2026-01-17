@@ -235,6 +235,55 @@ sys.stdout.flush()
       expect(output, contains('TEST_VAR_1=value1'));
       expect(output, contains('TEST_VAR_2=value2'));
     });
+
+    test('reports exit code for successful process', () async {
+      final pty = NativePty();
+
+      pty.stream.listen((data) {
+        // Consume output
+      });
+
+      final success = pty.spawn('/bin/bash', ['/bin/bash', '-c', 'exit 0']);
+      expect(success, isTrue);
+
+      final exitCode = await pty.exitCode;
+      expect(exitCode, equals(0));
+
+      pty.close();
+    });
+
+    test('reports exit code for failed process', () async {
+      final pty = NativePty();
+
+      pty.stream.listen((data) {
+        // Consume output
+      });
+
+      final success = pty.spawn('/bin/bash', ['/bin/bash', '-c', 'exit 42']);
+      expect(success, isTrue);
+
+      final exitCode = await pty.exitCode;
+      expect(exitCode, equals(42));
+
+      pty.close();
+    });
+
+    test('exitCode is awaitable', () async {
+      final pty = NativePty();
+
+      pty.stream.listen((data) {
+        // Consume output
+      });
+
+      final success = pty.spawn('/bin/echo', ['/bin/echo', 'test']);
+      expect(success, isTrue);
+
+      // The exitCode future should complete
+      final exitCode = await pty.exitCode.timeout(Duration(seconds: 2));
+      expect(exitCode, equals(0));
+
+      pty.close();
+    });
   });
 }
 

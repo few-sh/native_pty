@@ -47,14 +47,44 @@ static void* pty_read_loop(void* args) {
     return NULL;
 }
 
+// Thread function for monitoring process exit
+static void* pty_exit_monitor(void* args) {
+    PtyContext* ctx = (PtyContext*)args;
+    int status;
+    int exit_code = 0;
+    
+    // Wait for the child process to exit
+    if (waitpid(ctx->pid, &status, 0) > 0) {
+        if (WIFEXITED(status)) {
+            exit_code = WEXITSTATUS(status);
+        } else if (WIFSIGNALED(status)) {
+            // Process was killed by a signal, use 128 + signal number convention
+            exit_code = 128 + WTERMSIG(status);
+        } else {
+            // Unknown status, use -1
+            exit_code = -1;
+        }
+    } else {
+        // waitpid failed
+        exit_code = -1;
+    }
+    
+    // Notify Dart about process exit
+    if (ctx->exit_callback != NULL) {
+        ctx->exit_callback(exit_code);
+    }
+    
+    return NULL;
+}
+
 // Initialize the PTY system
 void pty_init() {
-    // Ignore SIGCHLD to avoid zombie processes
-    signal(SIGCHLD, SIG_IGN);
+    // Don't ignore SIGCHLD - we need to wait for child processes
+    // to get their exit codes
 }
 
 // Spawn a new process with PTY
-PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[], PtyDataCallback callback) {
+PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[], PtyDataCallback callback, PtyExitCallback exit_callback) {
     if (command == NULL || argv == NULL || callback == NULL) {
         return NULL;
     }
@@ -66,6 +96,7 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     
     memset(ctx, 0, sizeof(PtyContext));
     ctx->callback = callback;
+    ctx->exit_callback = exit_callback;
     ctx->running = 1;
     
     int slave_fd;
@@ -144,6 +175,16 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     
     ctx->thread = (void*)thread;
     
+    // Start the exit monitoring thread if exit callback is provided
+    if (ctx->exit_callback != NULL) {
+        pthread_t exit_thread;
+        if (pthread_create(&exit_thread, NULL, pty_exit_monitor, ctx) == 0) {
+            // Detach the thread so it cleans up automatically
+            pthread_detach(exit_thread);
+            ctx->exit_thread = (void*)exit_thread;
+        }
+    }
+    
     return ctx;
 }
 
@@ -185,23 +226,24 @@ void pty_close(PtyContext* ctx) {
         close(ctx->master_fd);
     }
     
-    // Wait for thread to finish
+    // Wait for reader thread to finish
     if (ctx->thread != NULL) {
         pthread_join((pthread_t)ctx->thread, NULL);
     }
     
     // Kill the child process if still running
+    // The exit monitoring thread will handle waitpid and notification
     if (ctx->pid > 0) {
-        int status;
         // Try graceful termination first
         kill(ctx->pid, SIGTERM);
         // Wait briefly to see if process terminates
         usleep(100000); // 100ms
         // Check if process is still running
+        int status;
         if (waitpid(ctx->pid, &status, WNOHANG) == 0) {
             // Process still running, force kill
             kill(ctx->pid, SIGKILL);
-            waitpid(ctx->pid, &status, 0);
+            // Don't wait here - let the exit monitoring thread handle it
         }
     }
     

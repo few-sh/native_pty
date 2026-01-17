@@ -135,6 +135,26 @@ void main() async {
 }
 ```
 
+### Getting Process Exit Code
+
+```dart
+import 'package:native_pty/native_pty.dart';
+
+void main() async {
+  final pty = NativePty();
+
+  pty.stream.listen((data) => print(data));
+
+  pty.spawn('/bin/bash', ['/bin/bash', '-c', 'exit 42']);
+
+  // Wait for the process to exit and get its exit code
+  final exitCode = await pty.exitCode;
+  print('Process exited with code: $exitCode');
+
+  pty.close();
+}
+```
+
 ## API Reference
 
 ### `NativePty` Class
@@ -162,6 +182,10 @@ void main() async {
 
 #### Properties
 - `Stream<String> stream` - Stream of UTF-8 decoded output from the PTY
+- `Future<int> exitCode` - Future that completes with the process exit code
+  - Exit code is 0-255 if the process exited normally
+  - Exit code is 128 + signal number if killed by a signal
+  - Exit code is -1 if the status could not be determined
 
 ## Implementation Details
 
