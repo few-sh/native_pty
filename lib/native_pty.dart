@@ -76,7 +76,7 @@ class NativePty {
   ffi.Pointer<PtyContext>? _context;
   late final ffi.NativeCallable<PtyDataCallbackNative> _nativeCallback;
   final StreamController<String> _controller = StreamController<String>();
-  final Utf8Decoder _utf8Decoder = const Utf8Decoder(allowMalformed: false);
+  late final ByteConversionSink _utf8Sink;
   bool _closed = false;
 
   /// Creates a new NativePty instance.
@@ -95,6 +95,13 @@ class NativePty {
     // Initialize the PTY system
     _ptyInit();
 
+    // Set up chunked UTF-8 decoder that maintains state between chunks
+    // This handles multi-byte UTF-8 characters split across buffer boundaries
+    final decoder = const Utf8Decoder(allowMalformed: false);
+    _utf8Sink = decoder.startChunkedConversion(
+      _StreamStringSink(_controller),
+    );
+
     // Set up the native callback
     _nativeCallback =
         ffi.NativeCallable<PtyDataCallbackNative>.listener(_onData);
@@ -105,11 +112,10 @@ class NativePty {
     try {
       // Convert native memory to Dart bytes
       final bytes = data.asTypedList(length);
-      // Use stateful UTF-8 decoder to handle multi-byte characters split across buffers
-      final string = _utf8Decoder.convert(bytes);
-
+      // Use chunked UTF-8 decoder to handle multi-byte characters split across buffers
+      // The decoder maintains state and will buffer incomplete sequences
       if (!_closed) {
-        _controller.add(string);
+        _utf8Sink.add(bytes);
       }
     } finally {
       // CRITICAL: Free the C memory now that Dart has copied it
@@ -216,7 +222,26 @@ class NativePty {
       _context = null;
     }
 
+    // Close the UTF-8 sink to flush any pending bytes
+    _utf8Sink.close();
     _controller.close();
     _nativeCallback.close();
+  }
+}
+
+/// Helper class to adapt StreamController to Sink interface for UTF-8 decoder
+class _StreamStringSink implements Sink<String> {
+  final StreamController<String> _controller;
+
+  _StreamStringSink(this._controller);
+
+  @override
+  void add(String data) {
+    _controller.add(data);
+  }
+
+  @override
+  void close() {
+    // Don't close the controller here, it's managed by NativePty
   }
 }
