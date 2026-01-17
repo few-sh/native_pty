@@ -1,3 +1,215 @@
-int calculate() {
-  return 6 * 7;
+import 'dart:async';
+import 'dart:ffi' as ffi;
+import 'dart:io';
+import 'dart:typed_data';
+import 'dart:convert';
+import 'package:ffi/ffi.dart';
+
+// Native types
+final class PtyContext extends ffi.Opaque {}
+
+// Callback signature for data received from PTY
+typedef PtyDataCallbackNative = ffi.Void Function(
+    ffi.Pointer<ffi.Uint8> data, ffi.Int32 length);
+typedef PtyDataCallback = void Function(
+    ffi.Pointer<ffi.Uint8> data, int length);
+
+// Native function signatures
+typedef PtyInitNative = ffi.Void Function();
+typedef PtyInit = void Function();
+
+typedef PtySpawnNative = ffi.Pointer<PtyContext> Function(
+    ffi.Pointer<Utf8> command,
+    ffi.Pointer<ffi.Pointer<Utf8>> argv,
+    ffi.Pointer<ffi.NativeFunction<PtyDataCallbackNative>> callback);
+typedef PtySpawn = ffi.Pointer<PtyContext> Function(
+    ffi.Pointer<Utf8> command,
+    ffi.Pointer<ffi.Pointer<Utf8>> argv,
+    ffi.Pointer<ffi.NativeFunction<PtyDataCallbackNative>> callback);
+
+typedef PtyWriteNative = ffi.Int32 Function(
+    ffi.Pointer<PtyContext> ctx, ffi.Pointer<ffi.Uint8> data, ffi.Int32 length);
+typedef PtyWrite = int Function(
+    ffi.Pointer<PtyContext> ctx, ffi.Pointer<ffi.Uint8> data, int length);
+
+typedef PtyResizeNative = ffi.Int32 Function(
+    ffi.Pointer<PtyContext> ctx, ffi.Int32 rows, ffi.Int32 cols);
+typedef PtyResize = int Function(
+    ffi.Pointer<PtyContext> ctx, int rows, int cols);
+
+typedef PtyCloseNative = ffi.Void Function(ffi.Pointer<PtyContext> ctx);
+typedef PtyClose = void Function(ffi.Pointer<PtyContext> ctx);
+
+typedef PtyFreeNative = ffi.Void Function(ffi.Pointer<ffi.Void> ptr);
+typedef PtyFree = void Function(ffi.Pointer<ffi.Void> ptr);
+
+// Load the native library
+ffi.DynamicLibrary _loadLibrary() {
+  if (Platform.isLinux) {
+    return ffi.DynamicLibrary.open('lib/linux/libpty_bridge.so');
+  } else if (Platform.isMacOS) {
+    return ffi.DynamicLibrary.open('lib/macos/libpty_bridge.dylib');
+  } else {
+    throw UnsupportedError('Platform ${Platform.operatingSystem} is not supported');
+  }
 }
+
+/// A native pseudo-terminal (PTY) interface for Dart.
+///
+/// This class provides a high-level API for spawning processes with a PTY
+/// and communicating with them through a Stream interface.
+class NativePty {
+  late final ffi.DynamicLibrary _lib;
+  late final PtyInit _ptyInit;
+  late final PtySpawn _ptySpawn;
+  late final PtyWrite _ptyWrite;
+  late final PtyResize _ptyResize;
+  late final PtyClose _ptyClose;
+  late final PtyFree _ptyFree;
+
+  ffi.Pointer<PtyContext>? _context;
+  late final ffi.NativeCallable<PtyDataCallbackNative> _nativeCallback;
+  final StreamController<String> _controller = StreamController<String>();
+  bool _closed = false;
+
+  /// Creates a new NativePty instance.
+  ///
+  /// This initializes the FFI bindings and sets up the data callback.
+  NativePty() {
+    _lib = _loadLibrary();
+
+    _ptyInit = _lib.lookupFunction<PtyInitNative, PtyInit>('pty_init');
+    _ptySpawn = _lib.lookupFunction<PtySpawnNative, PtySpawn>('pty_spawn');
+    _ptyWrite = _lib.lookupFunction<PtyWriteNative, PtyWrite>('pty_write');
+    _ptyResize = _lib.lookupFunction<PtyResizeNative, PtyResize>('pty_resize');
+    _ptyClose = _lib.lookupFunction<PtyCloseNative, PtyClose>('pty_close');
+    _ptyFree = _lib.lookupFunction<PtyFreeNative, PtyFree>('pty_free');
+
+    // Initialize the PTY system
+    _ptyInit();
+
+    // Set up the native callback
+    _nativeCallback =
+        ffi.NativeCallable<PtyDataCallbackNative>.listener(_onData);
+  }
+
+  /// Callback for data received from the PTY.
+  void _onData(ffi.Pointer<ffi.Uint8> data, int length) {
+    try {
+      // Convert native memory to Dart bytes
+      final bytes = data.asTypedList(length);
+      final string = utf8.decode(bytes, allowMalformed: true);
+
+      if (!_closed) {
+        _controller.add(string);
+      }
+    } finally {
+      // CRITICAL: Free the C memory now that Dart has copied it
+      _ptyFree(data.cast<ffi.Void>());
+    }
+  }
+
+  /// Spawns a new process with a PTY.
+  ///
+  /// [command] is the path to the executable to run.
+  /// [args] is the list of arguments to pass to the command (including argv[0]).
+  ///
+  /// Returns true if the spawn was successful, false otherwise.
+  bool spawn(String command, List<String> args) {
+    if (_context != null) {
+      throw StateError('PTY already spawned');
+    }
+
+    // Allocate memory for command
+    final commandPtr = command.toNativeUtf8(allocator: calloc);
+
+    // Allocate memory for argv array (null-terminated)
+    final argvPtr = calloc<ffi.Pointer<Utf8>>(args.length + 1);
+    for (var i = 0; i < args.length; i++) {
+      argvPtr[i] = args[i].toNativeUtf8(allocator: calloc);
+    }
+    argvPtr[args.length] = ffi.nullptr;
+
+    try {
+      _context = _ptySpawn(commandPtr, argvPtr, _nativeCallback.nativeFunction);
+
+      if (_context == null || _context == ffi.nullptr) {
+        return false;
+      }
+
+      return true;
+    } finally {
+      // Clean up allocated memory
+      calloc.free(commandPtr);
+      for (var i = 0; i < args.length; i++) {
+        calloc.free(argvPtr[i]);
+      }
+      calloc.free(argvPtr);
+    }
+  }
+
+  /// Writes data to the PTY.
+  ///
+  /// [data] is the string to write to the PTY.
+  ///
+  /// Returns the number of bytes written, or -1 on error.
+  int write(String data) {
+    if (_context == null || _context == ffi.nullptr) {
+      throw StateError('PTY not spawned');
+    }
+
+    final bytes = utf8.encode(data);
+    final length = bytes.length;
+
+    // Allocate native memory for the data
+    final dataPtr = calloc<ffi.Uint8>(length);
+    try {
+      for (var i = 0; i < length; i++) {
+        dataPtr[i] = bytes[i];
+      }
+
+      return _ptyWrite(_context!, dataPtr, length);
+    } finally {
+      calloc.free(dataPtr);
+    }
+  }
+
+  /// Resizes the PTY window.
+  ///
+  /// [rows] is the number of rows (height).
+  /// [cols] is the number of columns (width).
+  ///
+  /// Returns 0 on success, -1 on error.
+  int resize(int rows, int cols) {
+    if (_context == null || _context == ffi.nullptr) {
+      throw StateError('PTY not spawned');
+    }
+
+    return _ptyResize(_context!, rows, cols);
+  }
+
+  /// Stream of data received from the PTY.
+  ///
+  /// Data is provided as UTF-8 decoded strings.
+  Stream<String> get stream => _controller.stream;
+
+  /// Closes the PTY and cleans up resources.
+  ///
+  /// This will terminate the child process and close the PTY.
+  void close() {
+    if (_closed) {
+      return;
+    }
+
+    _closed = true;
+
+    if (_context != null && _context != ffi.nullptr) {
+      _ptyClose(_context!);
+      _context = null;
+    }
+
+    _controller.close();
+    _nativeCallback.close();
+  }
+}
+
