@@ -37,6 +37,9 @@ static void* pty_read_loop(void* args) {
             // Asynchronously notify Dart
             if (ctx->callback != NULL) {
                 ctx->callback(out, n);
+            } else {
+                // Free memory if callback is not available
+                free(out);
             }
         }
     }

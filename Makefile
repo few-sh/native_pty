@@ -31,6 +31,6 @@ $(INSTALL_DIR)/$(TARGET): $(OBJ)
 
 clean:
 	rm -f $(OBJ)
-	rm -rf lib
+	rm -rf lib/linux lib/macos lib/windows
 
 .PHONY: all clean
