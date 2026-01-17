@@ -76,6 +76,7 @@ class NativePty {
   ffi.Pointer<PtyContext>? _context;
   late final ffi.NativeCallable<PtyDataCallbackNative> _nativeCallback;
   final StreamController<String> _controller = StreamController<String>();
+  final Utf8Decoder _utf8Decoder = const Utf8Decoder(allowMalformed: false);
   bool _closed = false;
 
   /// Creates a new NativePty instance.
@@ -104,7 +105,8 @@ class NativePty {
     try {
       // Convert native memory to Dart bytes
       final bytes = data.asTypedList(length);
-      final string = utf8.decode(bytes, allowMalformed: true);
+      // Use stateful UTF-8 decoder to handle multi-byte characters split across buffers
+      final string = _utf8Decoder.convert(bytes);
 
       if (!_closed) {
         _controller.add(string);
