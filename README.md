@@ -40,6 +40,15 @@ make
 
 This will create `lib/linux/libpty_bridge.so` on Linux or `lib/macos/libpty_bridge.dylib` on macOS.
 
+### Custom Library Path
+
+By default, the library looks for the native library in the platform-specific directory. You can override this by setting the `NATIVE_PTY_LIBRARY_PATH` environment variable:
+
+```bash
+export NATIVE_PTY_LIBRARY_PATH=/custom/path/to/libpty_bridge.so
+dart run your_app.dart
+```
+
 ## Usage
 
 ### Basic Example - Running a Command

@@ -55,7 +55,7 @@ void pty_init() {
 
 // Spawn a new process with PTY
 PtyContext* pty_spawn(const char* command, char* const argv[], PtyDataCallback callback) {
-    if (command == NULL || callback == NULL) {
+    if (command == NULL || argv == NULL || callback == NULL) {
         return NULL;
     }
     
@@ -190,11 +190,17 @@ void pty_close(PtyContext* ctx) {
     
     // Kill the child process if still running
     if (ctx->pid > 0) {
+        int status;
+        // Try graceful termination first
         kill(ctx->pid, SIGTERM);
-        // Give it a moment to terminate gracefully
+        // Wait briefly to see if process terminates
         usleep(100000); // 100ms
-        // Force kill if still alive
-        kill(ctx->pid, SIGKILL);
+        // Check if process is still running
+        if (waitpid(ctx->pid, &status, WNOHANG) == 0) {
+            // Process still running, force kill
+            kill(ctx->pid, SIGKILL);
+            waitpid(ctx->pid, &status, 0);
+        }
     }
     
     free(ctx);

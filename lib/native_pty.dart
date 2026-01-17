@@ -44,6 +44,13 @@ typedef PtyFree = void Function(ffi.Pointer<ffi.Void> ptr);
 
 // Load the native library
 ffi.DynamicLibrary _loadLibrary() {
+  // Try environment variable first for flexibility
+  final libraryPath = Platform.environment['NATIVE_PTY_LIBRARY_PATH'];
+  if (libraryPath != null && libraryPath.isNotEmpty) {
+    return ffi.DynamicLibrary.open(libraryPath);
+  }
+
+  // Default paths based on platform
   if (Platform.isLinux) {
     return ffi.DynamicLibrary.open('lib/linux/libpty_bridge.so');
   } else if (Platform.isMacOS) {
@@ -163,9 +170,9 @@ class NativePty {
     // Allocate native memory for the data
     final dataPtr = calloc<ffi.Uint8>(length);
     try {
-      for (var i = 0; i < length; i++) {
-        dataPtr[i] = bytes[i];
-      }
+      // Efficiently copy bytes using asTypedList
+      final nativeBytes = dataPtr.asTypedList(length);
+      nativeBytes.setAll(0, bytes);
 
       return _ptyWrite(_context!, dataPtr, length);
     } finally {
