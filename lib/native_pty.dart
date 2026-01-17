@@ -20,10 +20,12 @@ typedef PtyInit = void Function();
 typedef PtySpawnNative = ffi.Pointer<PtyContext> Function(
     ffi.Pointer<Utf8> command,
     ffi.Pointer<ffi.Pointer<Utf8>> argv,
+    ffi.Pointer<ffi.Pointer<Utf8>> envp,
     ffi.Pointer<ffi.NativeFunction<PtyDataCallbackNative>> callback);
 typedef PtySpawn = ffi.Pointer<PtyContext> Function(
     ffi.Pointer<Utf8> command,
     ffi.Pointer<ffi.Pointer<Utf8>> argv,
+    ffi.Pointer<ffi.Pointer<Utf8>> envp,
     ffi.Pointer<ffi.NativeFunction<PtyDataCallbackNative>> callback);
 
 typedef PtyWriteNative = ffi.Int32 Function(
@@ -127,9 +129,11 @@ class NativePty {
   ///
   /// [command] is the path to the executable to run.
   /// [args] is the list of arguments to pass to the command (including argv[0]).
+  /// [environment] is an optional map of environment variables to set for the process.
+  /// If null, the current process environment is used.
   ///
   /// Returns true if the spawn was successful, false otherwise.
-  bool spawn(String command, List<String> args) {
+  bool spawn(String command, List<String> args, {Map<String, String>? environment}) {
     if (_context != null) {
       throw StateError('PTY already spawned');
     }
@@ -144,8 +148,25 @@ class NativePty {
     }
     argvPtr[args.length] = ffi.nullptr;
 
+    // Allocate memory for environment array (null-terminated) if provided
+    ffi.Pointer<ffi.Pointer<Utf8>> envpPtr = ffi.nullptr;
+    List<String>? envStrings;
+    
+    if (environment != null) {
+      // Convert map to KEY=VALUE strings
+      envStrings = environment.entries
+          .map((e) => '${e.key}=${e.value}')
+          .toList();
+      
+      envpPtr = calloc<ffi.Pointer<Utf8>>(envStrings.length + 1);
+      for (var i = 0; i < envStrings.length; i++) {
+        envpPtr[i] = envStrings[i].toNativeUtf8(allocator: calloc);
+      }
+      envpPtr[envStrings.length] = ffi.nullptr;
+    }
+
     try {
-      _context = _ptySpawn(commandPtr, argvPtr, _nativeCallback.nativeFunction);
+      _context = _ptySpawn(commandPtr, argvPtr, envpPtr, _nativeCallback.nativeFunction);
 
       if (_context == null || _context == ffi.nullptr) {
         return false;
@@ -159,6 +180,14 @@ class NativePty {
         calloc.free(argvPtr[i]);
       }
       calloc.free(argvPtr);
+      
+      // Clean up environment memory if allocated
+      if (envpPtr != ffi.nullptr && envStrings != null) {
+        for (var i = 0; i < envStrings.length; i++) {
+          calloc.free(envpPtr[i]);
+        }
+        calloc.free(envpPtr);
+      }
     }
   }
 

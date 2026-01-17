@@ -204,6 +204,37 @@ sys.stdout.flush()
       // Verify we got the expected number of A's
       expect('A'.allMatches(output).length, equals(4090));
     });
+
+    test('can set custom environment variables', () async {
+      final pty = NativePty();
+
+      final outputBuffer = StringBuffer();
+      pty.stream.listen((data) {
+        outputBuffer.write(data);
+      });
+
+      // Spawn bash with custom environment variables
+      final customEnv = {
+        'TEST_VAR_1': 'value1',
+        'TEST_VAR_2': 'value2',
+        'PATH': Platform.environment['PATH'] ?? '/usr/bin:/bin',
+      };
+
+      final success = pty.spawn(
+        '/bin/bash',
+        ['/bin/bash', '-c', r'echo "TEST_VAR_1=$TEST_VAR_1" && echo "TEST_VAR_2=$TEST_VAR_2"'],
+        environment: customEnv,
+      );
+      expect(success, isTrue);
+
+      await Future.delayed(Duration(seconds: 1));
+
+      pty.close();
+
+      final output = outputBuffer.toString();
+      expect(output, contains('TEST_VAR_1=value1'));
+      expect(output, contains('TEST_VAR_2=value2'));
+    });
   });
 }
 

@@ -107,6 +107,34 @@ pty.spawn('/bin/bash', ['/bin/bash', '-i']);
 pty.resize(30, 100);
 ```
 
+### Custom Environment Variables
+
+```dart
+import 'dart:io';
+import 'package:native_pty/native_pty.dart';
+
+void main() async {
+  final pty = NativePty();
+
+  pty.stream.listen((data) => stdout.write(data));
+
+  // Spawn bash with custom environment variables
+  final customEnv = {
+    'MY_VAR': 'my_value',
+    'PATH': Platform.environment['PATH'] ?? '/usr/bin:/bin',
+  };
+
+  pty.spawn(
+    '/bin/bash',
+    ['/bin/bash', '-c', 'echo "MY_VAR=$MY_VAR"'],
+    environment: customEnv,
+  );
+
+  await Future.delayed(Duration(seconds: 1));
+  pty.close();
+}
+```
+
 ## API Reference
 
 ### `NativePty` Class
@@ -115,9 +143,10 @@ pty.resize(30, 100);
 - `NativePty()` - Creates a new PTY instance
 
 #### Methods
-- `bool spawn(String command, List<String> args)` - Spawns a process with the PTY
+- `bool spawn(String command, List<String> args, {Map<String, String>? environment})` - Spawns a process with the PTY
   - `command`: Full path to the executable
   - `args`: List of arguments (including argv[0])
+  - `environment`: Optional map of environment variables (if null, inherits current process environment)
   - Returns: `true` on success, `false` on failure
 
 - `int write(String data)` - Writes data to the PTY

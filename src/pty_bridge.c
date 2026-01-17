@@ -54,7 +54,7 @@ void pty_init() {
 }
 
 // Spawn a new process with PTY
-PtyContext* pty_spawn(const char* command, char* const argv[], PtyDataCallback callback) {
+PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[], PtyDataCallback callback) {
     if (command == NULL || argv == NULL || callback == NULL) {
         return NULL;
     }
@@ -117,7 +117,9 @@ PtyContext* pty_spawn(const char* command, char* const argv[], PtyDataCallback c
     posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID);
     
     pid_t pid;
-    int spawn_result = posix_spawn(&pid, command, &actions, &attr, argv, environ);
+    // Use provided environment or fall back to current process environment
+    char* const* env_to_use = (envp != NULL) ? envp : environ;
+    int spawn_result = posix_spawn(&pid, command, &actions, &attr, argv, env_to_use);
     
     posix_spawn_file_actions_destroy(&actions);
     posix_spawnattr_destroy(&attr);
