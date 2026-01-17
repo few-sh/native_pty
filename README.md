@@ -155,6 +155,34 @@ void main() async {
 }
 ```
 
+### Sending Signals to Processes
+
+```dart
+import 'dart:io';
+import 'package:native_pty/native_pty.dart';
+
+void main() async {
+  final pty = NativePty();
+
+  pty.stream.listen((data) => print(data));
+
+  pty.spawn('/bin/bash', ['/bin/bash', '-c', 'sleep 100']);
+
+  await Future.delayed(Duration(seconds: 2));
+
+  // Send SIGTERM to gracefully terminate the process
+  pty.kill(ProcessSignal.sigterm.signalNumber);
+
+  // Or use default SIGTERM
+  // pty.kill();
+
+  final exitCode = await pty.exitCode;
+  print('Process exited with code: $exitCode');
+
+  pty.close();
+}
+```
+
 ## API Reference
 
 ### `NativePty` Class
@@ -176,6 +204,11 @@ void main() async {
 - `int resize(int rows, int cols)` - Resizes the PTY window
   - `rows`: Number of rows (height)
   - `cols`: Number of columns (width)
+  - Returns: 0 on success, -1 on error
+
+- `int kill([int? signal])` - Sends a signal to the PTY process
+  - `signal`: Signal number to send (defaults to SIGTERM if not specified)
+  - Common signals: `ProcessSignal.sigterm.signalNumber` (15), `ProcessSignal.sigkill.signalNumber` (9), `ProcessSignal.sigint.signalNumber` (2)
   - Returns: 0 on success, -1 on error
 
 - `void close()` - Closes the PTY and terminates the process

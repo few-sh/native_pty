@@ -179,8 +179,7 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     if (ctx->exit_callback != NULL) {
         pthread_t exit_thread;
         if (pthread_create(&exit_thread, NULL, pty_exit_monitor, ctx) == 0) {
-            // Detach the thread so it cleans up automatically
-            pthread_detach(exit_thread);
+            // Don't detach - we need to join it in close() to avoid use-after-free
             ctx->exit_thread = (void*)exit_thread;
         }
     }
@@ -213,6 +212,20 @@ int pty_resize(PtyContext* ctx, int rows, int cols) {
     return ioctl(ctx->master_fd, TIOCSWINSZ, &ws);
 }
 
+// Send a signal to the PTY process
+int pty_kill(PtyContext* ctx, int signal) {
+    if (ctx == NULL || ctx->pid <= 0) {
+        return -1;
+    }
+    
+    // Send the signal to the process
+    if (kill(ctx->pid, signal) == 0) {
+        return 0;
+    }
+    
+    return -1;
+}
+
 // Close and cleanup the PTY
 void pty_close(PtyContext* ctx) {
     if (ctx == NULL) {
@@ -232,7 +245,6 @@ void pty_close(PtyContext* ctx) {
     }
     
     // Kill the child process if still running
-    // The exit monitoring thread will handle waitpid and notification
     if (ctx->pid > 0) {
         // Try graceful termination first
         kill(ctx->pid, SIGTERM);
@@ -243,8 +255,13 @@ void pty_close(PtyContext* ctx) {
         if (waitpid(ctx->pid, &status, WNOHANG) == 0) {
             // Process still running, force kill
             kill(ctx->pid, SIGKILL);
-            // Don't wait here - let the exit monitoring thread handle it
         }
+    }
+    
+    // Wait for exit monitoring thread to finish
+    // This is important to avoid use-after-free
+    if (ctx->exit_thread != NULL) {
+        pthread_join((pthread_t)ctx->exit_thread, NULL);
     }
     
     free(ctx);

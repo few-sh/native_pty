@@ -44,6 +44,10 @@ typedef PtyResizeNative = ffi.Int32 Function(
 typedef PtyResize = int Function(
     ffi.Pointer<PtyContext> ctx, int rows, int cols);
 
+typedef PtyKillNative = ffi.Int32 Function(
+    ffi.Pointer<PtyContext> ctx, ffi.Int32 signal);
+typedef PtyKill = int Function(ffi.Pointer<PtyContext> ctx, int signal);
+
 typedef PtyCloseNative = ffi.Void Function(ffi.Pointer<PtyContext> ctx);
 typedef PtyClose = void Function(ffi.Pointer<PtyContext> ctx);
 
@@ -78,6 +82,7 @@ class NativePty {
   late final PtySpawn _ptySpawn;
   late final PtyWrite _ptyWrite;
   late final PtyResize _ptyResize;
+  late final PtyKill _ptyKill;
   late final PtyClose _ptyClose;
   late final PtyFree _ptyFree;
 
@@ -99,6 +104,7 @@ class NativePty {
     _ptySpawn = _lib.lookupFunction<PtySpawnNative, PtySpawn>('pty_spawn');
     _ptyWrite = _lib.lookupFunction<PtyWriteNative, PtyWrite>('pty_write');
     _ptyResize = _lib.lookupFunction<PtyResizeNative, PtyResize>('pty_resize');
+    _ptyKill = _lib.lookupFunction<PtyKillNative, PtyKill>('pty_kill');
     _ptyClose = _lib.lookupFunction<PtyCloseNative, PtyClose>('pty_close');
     _ptyFree = _lib.lookupFunction<PtyFreeNative, PtyFree>('pty_free');
 
@@ -248,6 +254,27 @@ class NativePty {
     }
 
     return _ptyResize(_context!, rows, cols);
+  }
+
+  /// Sends a signal to the PTY process.
+  ///
+  /// [signal] is the signal number to send (e.g., ProcessSignal.sigterm.signalNumber).
+  ///
+  /// Common signals:
+  /// - ProcessSignal.sigterm.signalNumber (15): Graceful termination
+  /// - ProcessSignal.sigkill.signalNumber (9): Force kill
+  /// - ProcessSignal.sigint.signalNumber (2): Interrupt (Ctrl+C)
+  /// - ProcessSignal.sighup.signalNumber (1): Hangup
+  ///
+  /// Returns 0 on success, -1 on error.
+  int kill([int? signal]) {
+    if (_context == null || _context == ffi.nullptr) {
+      throw StateError('PTY not spawned');
+    }
+
+    // Default to SIGTERM if no signal specified
+    final sig = signal ?? ProcessSignal.sigterm.signalNumber;
+    return _ptyKill(_context!, sig);
   }
 
   /// Stream of data received from the PTY.

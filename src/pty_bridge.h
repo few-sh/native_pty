@@ -35,6 +35,10 @@ int pty_write(PtyContext* ctx, const uint8_t* data, int length);
 // Resize the PTY window
 int pty_resize(PtyContext* ctx, int rows, int cols);
 
+// Send a signal to the PTY process
+// Returns 0 on success, -1 on error
+int pty_kill(PtyContext* ctx, int signal);
+
 // Close and cleanup the PTY
 void pty_close(PtyContext* ctx);
 

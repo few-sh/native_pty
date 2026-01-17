@@ -284,6 +284,83 @@ sys.stdout.flush()
 
       pty.close();
     });
+
+    test('can send SIGTERM signal', () async {
+      final pty = NativePty();
+
+      pty.stream.listen((data) {
+        // Consume output
+      });
+
+      final success = pty.spawn('/bin/bash', ['/bin/bash', '-c', 'sleep 100']);
+      expect(success, isTrue);
+
+      await Future.delayed(Duration(milliseconds: 200));
+
+      // Send SIGTERM
+      final result = pty.kill(ProcessSignal.sigterm.signalNumber);
+      expect(result, equals(0));
+
+      final exitCode = await pty.exitCode;
+      // Process killed by SIGTERM should have exit code 128 + 15 = 143
+      expect(exitCode, equals(143));
+
+      pty.close();
+    });
+
+    test('can send SIGKILL signal', () async {
+      final pty = NativePty();
+
+      pty.stream.listen((data) {
+        // Consume output
+      });
+
+      final success = pty.spawn('/bin/bash', ['/bin/bash', '-c', 'sleep 100']);
+      expect(success, isTrue);
+
+      await Future.delayed(Duration(milliseconds: 500));
+
+      // Send SIGKILL
+      final result = pty.kill(ProcessSignal.sigkill.signalNumber);
+      expect(result, equals(0));
+
+      final exitCode = await pty.exitCode.timeout(Duration(seconds: 3));
+      // Process killed by SIGKILL should have exit code 128 + 9 = 137
+      expect(exitCode, equals(137));
+
+      pty.close();
+    });
+
+    test('kill uses default SIGTERM when no signal specified', () async {
+      final pty = NativePty();
+
+      pty.stream.listen((data) {
+        // Consume output
+      });
+
+      final success = pty.spawn('/bin/bash', ['/bin/bash', '-c', 'sleep 100']);
+      expect(success, isTrue);
+
+      await Future.delayed(Duration(milliseconds: 500));
+
+      // Send default signal (SIGTERM)
+      final result = pty.kill();
+      expect(result, equals(0));
+
+      final exitCode = await pty.exitCode.timeout(Duration(seconds: 3));
+      // Process killed by SIGTERM should have exit code 128 + 15 = 143
+      expect(exitCode, equals(143));
+
+      pty.close();
+    });
+
+    test('throws StateError when killing non-spawned PTY', () {
+      final pty = NativePty();
+      
+      expect(() => pty.kill(), throwsStateError);
+      
+      pty.close();
+    });
   });
 }
 
