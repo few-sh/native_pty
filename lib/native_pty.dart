@@ -218,4 +218,3 @@ class NativePty {
     _nativeCallback.close();
   }
 }
-
