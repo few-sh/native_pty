@@ -30,44 +30,21 @@ void main() async {
     },
   );
 
-  // Spawn Python to output precisely sized data that will split UTF-8 chars
-  // Python script writes:
-  // 1. First: 'A' repeated to fill most of a 4096 buffer, then a 4-byte emoji
-  // 2. The emoji bytes will likely be split across read boundaries
-  final success = pty.spawn('/usr/bin/python3', [
-    '/usr/bin/python3',
-    '-c',
-    '''
-import sys
-import time
-
-# Write data that's designed to split a multi-byte UTF-8 character
-# 4-byte emoji: 🚀 is F0 9F 9A 80 in UTF-8
-# We'll write characters up to near the buffer boundary, then the emoji
-
-# First, write 4090 'A' characters to approach 4096 buffer size
-# Then write a 4-byte emoji that might get split
-sys.stdout.write('A' * 4090)
-sys.stdout.flush()
-time.sleep(0.1)  # Small delay to ensure separate writes
-
-# Now write a multi-byte character
-sys.stdout.write('🚀')
-sys.stdout.flush()
-time.sleep(0.1)
-
-# Write more data to confirm decoder is working
-sys.stdout.write(' Test Complete\\n')
-sys.stdout.flush()
-'''
-  ]);
+  // Spawn C helper program to output precisely sized data that will split UTF-8 chars
+  // Helper program writes:
+  // 1. First: 'A' repeated to fill most of a 4096 buffer (4090 bytes)
+  // 2. Then a 4-byte emoji that will likely be split across read boundaries
+  // 3. Finally: " Test Complete\n"
+  final helperPath = 'bin/utf8_boundary_test_helper';
+  final success = pty.spawn(helperPath, [helperPath]);
 
   if (!success) {
-    print('Failed to spawn python');
+    print('Failed to spawn helper program');
+    print('Make sure to run "make" to build the helper program first');
     exit(1);
   }
 
-  print('Python spawned, generating split UTF-8 scenario...\n');
+  print('Helper program spawned, generating split UTF-8 scenario...\n');
 
   // Wait for all output
   await Future.delayed(Duration(seconds: 2));

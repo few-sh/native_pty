@@ -173,24 +173,10 @@ void main() {
         outputBuffer.write(data);
       });
 
-      // Use Python to create a scenario where UTF-8 character might be split
-      // Write 4090 bytes then a 4-byte emoji
-      final success = pty.spawn('/usr/bin/python3', [
-        '/usr/bin/python3',
-        '-c',
-        '''
-import sys
-import time
-sys.stdout.write('A' * 4090)
-sys.stdout.flush()
-time.sleep(0.1)
-sys.stdout.write('🚀')
-sys.stdout.flush()
-time.sleep(0.1)
-sys.stdout.write(' Complete\\n')
-sys.stdout.flush()
-'''
-      ]);
+      // Use C helper program to create a scenario where UTF-8 character is split
+      // Helper writes 4090 bytes then a 4-byte emoji, then completion message
+      final helperPath = 'bin/utf8_boundary_test_helper';
+      final success = pty.spawn(helperPath, [helperPath]);
       expect(success, isTrue);
 
       await Future.delayed(Duration(seconds: 2));
@@ -200,7 +186,7 @@ sys.stdout.flush()
       final output = outputBuffer.toString();
       // Verify the emoji was correctly decoded
       expect(output, contains('🚀'));
-      expect(output, contains('Complete'));
+      expect(output, contains('Test Complete'));
       // Verify we got the expected number of A's
       expect('A'.allMatches(output).length, equals(4090));
     });

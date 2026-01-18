@@ -38,7 +38,9 @@ Before using the library, you need to build the native C library:
 make
 ```
 
-This will create `lib/linux/libpty_bridge.so` on Linux or `lib/macos/libpty_bridge.dylib` on macOS.
+This will create:
+- `lib/linux/libpty_bridge.so` on Linux or `lib/macos/libpty_bridge.dylib` on macOS
+- `bin/utf8_boundary_test_helper` - A helper program for testing UTF-8 boundary handling
 
 ### Custom Library Path
 

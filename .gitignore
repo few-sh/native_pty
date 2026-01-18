@@ -10,3 +10,6 @@
 lib/linux/
 lib/macos/
 lib/windows/
+
+# Test helper binaries
+bin/utf8_boundary_test_helper
