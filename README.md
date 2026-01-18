@@ -1,6 +1,6 @@
 # NativePty
 
-A native pseudo-terminal (PTY) library for Dart using FFI.
+A native pseudo-terminal (PTY) library for Dart using FFI and Dart's Native Assets framework.
 
 ## Features
 
@@ -10,14 +10,22 @@ A native pseudo-terminal (PTY) library for Dart using FFI.
 - Resize the PTY window dynamically
 - Automatic memory management and process cleanup
 - Background I/O thread for non-blocking reads
+- Built with Dart's Native Assets framework for automatic native library building and bundling
 
 ## Architecture
 
 The library consists of three layers:
 
 1. **C Bridge Library** (`src/pty_bridge.c`): Manages low-level PTY lifecycle, spawning, and background I/O threads
-2. **Dart FFI Bindings** (`lib/native_pty.dart`): Maps native functions and structs to Dart
+2. **Dart FFI Bindings** (`lib/native_pty.dart`): Maps native functions and structs to Dart using `@Native` annotations
 3. **Dart High-Level API** (`NativePty` class): Provides a Stream interface and handles memory safety
+4. **Build Hook** (`hook/build.dart`): Automatically builds the native C library using Dart's native assets framework
+
+## Requirements
+
+- Dart SDK >= 3.10.4
+- C compiler (gcc or clang)
+- Linux or macOS (Windows is not supported)
 
 ## Installation
 
@@ -32,7 +40,16 @@ dependencies:
 
 ## Building
 
-Before using the library, you need to build the native C library:
+**No manual build step is required!** The native C library is automatically built and bundled when you run your Dart application, thanks to Dart's Native Assets framework.
+
+When you run `dart run`, `dart test`, or build your application, the build hook (`hook/build.dart`) automatically:
+1. Compiles `src/pty_bridge.c` to a shared library
+2. Links it with the required system libraries (e.g., `-lutil`)
+3. Bundles it with your application
+
+### Manual Build (Optional)
+
+If you need to build the native library manually (e.g., for development), you can still use the Makefile:
 
 ```bash
 make
@@ -41,15 +58,6 @@ make
 This will create:
 - `lib/linux/libpty_bridge.so` on Linux or `lib/macos/libpty_bridge.dylib` on macOS
 - `bin/utf8_boundary_test_helper` - A helper program for testing UTF-8 boundary handling
-
-### Custom Library Path
-
-By default, the library looks for the native library in the platform-specific directory. You can override this by setting the `NATIVE_PTY_LIBRARY_PATH` environment variable:
-
-```bash
-export NATIVE_PTY_LIBRARY_PATH=/custom/path/to/libpty_bridge.so
-dart run your_app.dart
-```
 
 ## Usage
 
@@ -60,13 +68,11 @@ import 'dart:io';
 import 'package:native_pty/native_pty.dart';
 
 void main() async {
-  final pty = NativePty();
+  // Spawn a process - the native library is automatically loaded
+  final pty = NativePty.spawn('/bin/ls', ['/bin/ls', '-la']);
 
   // Listen to output
   pty.stream.listen((data) => stdout.write(data));
-
-  // Spawn a process
-  pty.spawn('/bin/ls', ['/bin/ls', '-la']);
 
   await Future.delayed(Duration(seconds: 1));
   pty.close();
@@ -80,12 +86,10 @@ import 'dart:io';
 import 'package:native_pty/native_pty.dart';
 
 void main() async {
-  final pty = NativePty();
+  // Spawn bash
+  final pty = NativePty.spawn('/bin/bash', ['/bin/bash', '-i']);
 
   pty.stream.listen((data) => stdout.write(data));
-
-  // Spawn bash
-  pty.spawn('/bin/bash', ['/bin/bash', '-i']);
 
   await Future.delayed(Duration(milliseconds: 500));
 
@@ -102,8 +106,7 @@ void main() async {
 ### Window Resizing
 
 ```dart
-final pty = NativePty();
-pty.spawn('/bin/bash', ['/bin/bash', '-i']);
+final pty = NativePty.spawn('/bin/bash', ['/bin/bash', '-i']);
 
 // Resize to 100 columns x 30 rows
 pty.resize(30, 100);
@@ -116,21 +119,19 @@ import 'dart:io';
 import 'package:native_pty/native_pty.dart';
 
 void main() async {
-  final pty = NativePty();
-
-  pty.stream.listen((data) => stdout.write(data));
-
   // Spawn bash with custom environment variables
   final customEnv = {
     'MY_VAR': 'my_value',
     'PATH': Platform.environment['PATH'] ?? '/usr/bin:/bin',
   };
 
-  pty.spawn(
+  final pty = NativePty.spawn(
     '/bin/bash',
     ['/bin/bash', '-c', 'echo "MY_VAR=$MY_VAR"'],
     environment: customEnv,
   );
+
+  pty.stream.listen((data) => stdout.write(data));
 
   await Future.delayed(Duration(seconds: 1));
   pty.close();
@@ -143,11 +144,9 @@ void main() async {
 import 'package:native_pty/native_pty.dart';
 
 void main() async {
-  final pty = NativePty();
+  final pty = NativePty.spawn('/bin/bash', ['/bin/bash', '-c', 'exit 42']);
 
   pty.stream.listen((data) => print(data));
-
-  pty.spawn('/bin/bash', ['/bin/bash', '-c', 'exit 42']);
 
   // Wait for the process to exit and get its exit code
   final exitCode = await pty.exitCode;
@@ -164,16 +163,14 @@ import 'dart:io';
 import 'package:native_pty/native_pty.dart';
 
 void main() async {
-  final pty = NativePty();
-
-  pty.stream.listen((data) => stdout.write(data));
-
   // Spawn process with custom working directory
-  pty.spawn(
+  final pty = NativePty.spawn(
     '/bin/bash',
     ['/bin/bash', '-c', 'pwd && ls -la'],
     workingDirectory: '/tmp',
   );
+
+  pty.stream.listen((data) => stdout.write(data));
 
   await Future.delayed(Duration(seconds: 1));
   pty.close();
@@ -187,12 +184,8 @@ import 'dart:io';
 import 'package:native_pty/native_pty.dart';
 
 void main() async {
-  final pty = NativePty();
-
-  pty.stream.listen((data) => stdout.write(data));
-
   // Spawn with raw mode (for vim, less, etc.)
-  pty.spawn(
+  final pty = NativePty.spawn(
     '/bin/bash',
     ['/bin/bash'],
     mode: TerminalMode.raw,  // canonical (default), cbreak, or raw
@@ -221,11 +214,9 @@ import 'dart:io';
 import 'package:native_pty/native_pty.dart';
 
 void main() async {
-  final pty = NativePty();
+  final pty = NativePty.spawn('/bin/bash', ['/bin/bash', '-c', 'sleep 100']);
 
   pty.stream.listen((data) => print(data));
-
-  pty.spawn('/bin/bash', ['/bin/bash', '-c', 'sleep 100']);
 
   await Future.delayed(Duration(seconds: 2));
 
@@ -246,38 +237,39 @@ void main() async {
 
 ### `NativePty` Class
 
-#### Constructor
-- `NativePty()` - Creates a new PTY instance
-
-#### Methods
-- `bool spawn(String command, List<String> args, {Map<String, String>? environment, String? workingDirectory, TerminalMode mode})` - Spawns a process with the PTY
+#### Static Factory Method
+- `NativePty.spawn(String command, List<String> args, {Map<String, String>? environment, String? workingDirectory, TerminalMode mode})` - Creates and spawns a new PTY instance
   - `command`: Full path to the executable
   - `args`: List of arguments (including argv[0])
   - `environment`: Optional map of environment variables (if null, inherits current process environment)
   - `workingDirectory`: Optional working directory for the process (if null, uses current directory)
   - `mode`: Terminal mode (defaults to `TerminalMode.canonical`)
-  - Returns: `true` on success, `false` on failure
+  - Returns: A new `NativePty` instance with the process running
+  - Throws: `PtyException` if spawn fails
 
+#### Methods
 - `int write(String data)` - Writes data to the PTY
   - `data`: String to write
-  - Returns: Number of bytes written, or -1 on error
+  - Returns: Number of bytes written
+  - Throws: `PtyException` on error, `StateError` if PTY is closed
 
-- `int resize(int rows, int cols)` - Resizes the PTY window
+- `void resize(int rows, int cols)` - Resizes the PTY window
   - `rows`: Number of rows (height)
   - `cols`: Number of columns (width)
-  - Returns: 0 on success, -1 on error
+  - Throws: `PtyException` on error, `StateError` if PTY is closed
 
-- `int kill([int? signal])` - Sends a signal to the PTY process
+- `void kill([int? signal])` - Sends a signal to the PTY process
   - `signal`: Signal number to send (defaults to SIGTERM if not specified)
   - Common signals: `ProcessSignal.sigterm.signalNumber` (15), `ProcessSignal.sigkill.signalNumber` (9), `ProcessSignal.sigint.signalNumber` (2)
-  - Returns: 0 on success, -1 on error
+  - Throws: `PtyException` on error, `StateError` if PTY is closed
 
-- `int setMode(TerminalMode mode)` - Sets the terminal mode
+- `void setMode(TerminalMode mode)` - Sets the terminal mode
   - `mode`: Terminal mode to set (`canonical`, `cbreak`, or `raw`)
-  - Returns: 0 on success, -1 on error
+  - Throws: `PtyException` on error, `StateError` if PTY is closed
 
 - `TerminalMode getMode()` - Gets the current terminal mode
   - Returns: Current `TerminalMode`
+  - Throws: `PtyException` on error, `StateError` if PTY is closed
 
 - `void close()` - Closes the PTY and terminates the process
 
@@ -298,6 +290,14 @@ Defines the terminal input/output processing mode:
 
 ## Implementation Details
 
+### Native Assets Framework
+
+This library uses Dart's Native Assets framework to automatically build and bundle the native C library:
+
+- **Build Hook** (`hook/build.dart`): Automatically compiles the C code when you build or run the application
+- **@DefaultAsset Annotation**: The Dart code uses `@DefaultAsset` and `@Native` annotations to automatically link to the compiled library
+- **No Manual Library Loading**: The library no longer needs manual `DynamicLibrary.open()` calls - everything is handled by the Dart SDK
+
 ### Thread Safety
 
 The library uses `posix_spawn` instead of `forkpty()` to avoid threading issues in multi-threaded environments. The background I/O thread reads from the PTY and sends data to Dart through a `NativeCallable.listener`.
@@ -316,12 +316,25 @@ The library uses `posix_spawn` instead of `forkpty()` to avoid threading issues 
 
 ## Examples
 
-See the `example/` directory for more examples:
+See the `examples/` directory for more examples:
 
 - `ls_example.dart` - Basic command execution
 - `bash_example.dart` - Interactive shell with commands
 - `resize_example.dart` - Window resizing demonstration
 - `memory_test.dart` - Memory management under high load
+- `env_example.dart` - Custom environment variables
+- `cwd_example.dart` - Custom working directory
+- `terminal_mode_example.dart` - Different terminal modes
+- `kill_example.dart` - Sending signals to processes
+- `exitcode_example.dart` - Getting process exit codes
+
+To run an example:
+
+```bash
+cd examples
+dart pub get
+dart run ls_example.dart
+```
 
 ## Testing
 
@@ -330,6 +343,8 @@ Run the tests:
 ```bash
 dart test
 ```
+
+All tests automatically build the native library before running.
 
 ## Platform Support
 
