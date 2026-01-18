@@ -8,6 +8,7 @@
 #include <pthread.h>
 #ifdef __APPLE__
 #include <util.h>
+#include <sys/event.h>
 #else
 #include <pty.h>
 #endif
@@ -54,24 +55,103 @@ static void* pty_read_loop(void* args) {
 // Thread function for monitoring process exit
 static void* pty_exit_monitor(void* args) {
     PtyContext* ctx = (PtyContext*)args;
-    int status;
     int exit_code = 0;
     
-    // Wait for the child process to exit
-    if (waitpid(ctx->pid, &status, 0) > 0) {
-        if (WIFEXITED(status)) {
-            exit_code = WEXITSTATUS(status);
-        } else if (WIFSIGNALED(status)) {
-            // Process was killed by a signal, use 128 + signal number convention
-            exit_code = 128 + WTERMSIG(status);
+#ifdef __APPLE__
+    // On macOS, use kqueue to monitor process exit
+    // This is more reliable than waitpid when other code (like Dart VM) 
+    // might also be waiting for children
+    int kq = kqueue();
+    if (kq >= 0) {
+        struct kevent change;
+        struct kevent event;
+        
+        // Register interest in EVFILT_PROC for NOTE_EXIT and NOTE_EXITSTATUS
+        // NOTE_EXITSTATUS makes event.data contain the exit status directly
+        EV_SET(&change, ctx->pid, EVFILT_PROC, EV_ADD | EV_ENABLE | EV_ONESHOT, 
+               NOTE_EXIT | NOTE_EXITSTATUS, 0, NULL);
+        
+        // Wait for the event
+        int nev = kevent(kq, &change, 1, &event, 1, NULL);
+        
+        close(kq);
+        
+        if (nev > 0 && (event.fflags & NOTE_EXIT)) {
+            // On macOS with NOTE_EXITSTATUS, event.data contains the exit status
+            // in the format that can be decoded with WIFEXITED/WEXITSTATUS macros
+            if (event.fflags & NOTE_EXITSTATUS) {
+                int status = (int)event.data;
+                if (WIFEXITED(status)) {
+                    exit_code = WEXITSTATUS(status);
+                } else if (WIFSIGNALED(status)) {
+                    exit_code = 128 + WTERMSIG(status);
+                } else {
+                    exit_code = -1;
+                }
+            } else {
+                // Fallback: try to get status from waitpid
+                int status;
+                pid_t result = waitpid(ctx->pid, &status, WNOHANG);
+                if (result > 0) {
+                    if (WIFEXITED(status)) {
+                        exit_code = WEXITSTATUS(status);
+                    } else if (WIFSIGNALED(status)) {
+                        exit_code = 128 + WTERMSIG(status);
+                    } else {
+                        exit_code = -1;
+                    }
+                } else {
+                    // Child was reaped by something else, can't get exit code
+                    exit_code = -1;
+                }
+            }
         } else {
-            // Unknown status, use -1
             exit_code = -1;
         }
     } else {
-        // waitpid failed
+        // Fallback to waitpid if kqueue fails
+        int status;
+        pid_t result;
+        int saved_errno;
+        do {
+            result = waitpid(ctx->pid, &status, 0);
+            saved_errno = errno;
+        } while (result == -1 && saved_errno == EINTR);
+        
+        if (result > 0) {
+            if (WIFEXITED(status)) {
+                exit_code = WEXITSTATUS(status);
+            } else if (WIFSIGNALED(status)) {
+                exit_code = 128 + WTERMSIG(status);
+            } else {
+                exit_code = -1;
+            }
+        } else {
+            exit_code = -1;
+        }
+    }
+#else
+    // On Linux, use standard waitpid
+    int status;
+    pid_t result;
+    int saved_errno;
+    do {
+        result = waitpid(ctx->pid, &status, 0);
+        saved_errno = errno;
+    } while (result == -1 && saved_errno == EINTR);
+    
+    if (result > 0) {
+        if (WIFEXITED(status)) {
+            exit_code = WEXITSTATUS(status);
+        } else if (WIFSIGNALED(status)) {
+            exit_code = 128 + WTERMSIG(status);
+        } else {
+            exit_code = -1;
+        }
+    } else {
         exit_code = -1;
     }
+#endif
     
     // Notify Dart about process exit
     if (ctx->exit_callback != NULL) {
