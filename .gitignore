@@ -11,5 +11,8 @@ lib/linux/
 lib/macos/
 lib/windows/
 
+# Native assets build artifacts
+.dart_tool/native_assets_builder/
+
 # Test helper binaries
 bin/utf8_boundary_test_helper

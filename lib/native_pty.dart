@@ -4,6 +4,9 @@ import 'dart:io';
 import 'dart:convert';
 import 'package:ffi/ffi.dart';
 
+// Specify the asset ID that the hook/build.dart will produce
+@ffi.DefaultAsset('native_pty')
+
 /// Terminal mode for PTY.
 ///
 /// Controls how input and output are processed by the terminal.
@@ -69,19 +72,23 @@ typedef PtyDataCallback = void Function(
 typedef PtyExitCallbackNative = ffi.Void Function(ffi.Int32 exitCode);
 typedef PtyExitCallback = void Function(int exitCode);
 
-// Native function signatures
-typedef PtyInitNative = ffi.Void Function();
-typedef PtyInit = void Function();
+// Native function signatures using @Native annotation
+// These will be automatically linked by the native assets framework
 
-typedef PtySpawnNative = ffi.Pointer<PtyContext> Function(
-    ffi.Pointer<Utf8> command,
-    ffi.Pointer<ffi.Pointer<Utf8>> argv,
-    ffi.Pointer<ffi.Pointer<Utf8>> envp,
-    ffi.Pointer<Utf8> cwd,
-    ffi.Int32 mode,
-    ffi.Pointer<ffi.NativeFunction<PtyDataCallbackNative>> callback,
-    ffi.Pointer<ffi.NativeFunction<PtyExitCallbackNative>> exitCallback);
-typedef PtySpawn = ffi.Pointer<PtyContext> Function(
+@ffi.Native<ffi.Void Function()>(symbol: 'pty_init')
+external void _ptyInit();
+
+@ffi.Native<
+    ffi.Pointer<PtyContext> Function(
+        ffi.Pointer<Utf8>,
+        ffi.Pointer<ffi.Pointer<Utf8>>,
+        ffi.Pointer<ffi.Pointer<Utf8>>,
+        ffi.Pointer<Utf8>,
+        ffi.Int32,
+        ffi.Pointer<ffi.NativeFunction<PtyDataCallbackNative>>,
+        ffi.Pointer<ffi.NativeFunction<PtyExitCallbackNative>>)>(
+    symbol: 'pty_spawn')
+external ffi.Pointer<PtyContext> _ptySpawn(
     ffi.Pointer<Utf8> command,
     ffi.Pointer<ffi.Pointer<Utf8>> argv,
     ffi.Pointer<ffi.Pointer<Utf8>> envp,
@@ -90,51 +97,33 @@ typedef PtySpawn = ffi.Pointer<PtyContext> Function(
     ffi.Pointer<ffi.NativeFunction<PtyDataCallbackNative>> callback,
     ffi.Pointer<ffi.NativeFunction<PtyExitCallbackNative>> exitCallback);
 
-typedef PtyWriteNative = ffi.Int32 Function(
-    ffi.Pointer<PtyContext> ctx, ffi.Pointer<ffi.Uint8> data, ffi.Int32 length);
-typedef PtyWrite = int Function(
+@ffi.Native<
+    ffi.Int32 Function(ffi.Pointer<PtyContext>, ffi.Pointer<ffi.Uint8>,
+        ffi.Int32)>(symbol: 'pty_write')
+external int _ptyWrite(
     ffi.Pointer<PtyContext> ctx, ffi.Pointer<ffi.Uint8> data, int length);
 
-typedef PtyResizeNative = ffi.Int32 Function(
-    ffi.Pointer<PtyContext> ctx, ffi.Int32 rows, ffi.Int32 cols);
-typedef PtyResize = int Function(
-    ffi.Pointer<PtyContext> ctx, int rows, int cols);
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<PtyContext>, ffi.Int32, ffi.Int32)>(
+    symbol: 'pty_resize')
+external int _ptyResize(ffi.Pointer<PtyContext> ctx, int rows, int cols);
 
-typedef PtyKillNative = ffi.Int32 Function(
-    ffi.Pointer<PtyContext> ctx, ffi.Int32 signal);
-typedef PtyKill = int Function(ffi.Pointer<PtyContext> ctx, int signal);
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<PtyContext>, ffi.Int32)>(
+    symbol: 'pty_kill')
+external int _ptyKill(ffi.Pointer<PtyContext> ctx, int signal);
 
-typedef PtySetModeNative = ffi.Int32 Function(
-    ffi.Pointer<PtyContext> ctx, ffi.Int32 mode);
-typedef PtySetMode = int Function(ffi.Pointer<PtyContext> ctx, int mode);
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<PtyContext>, ffi.Int32)>(
+    symbol: 'pty_set_mode')
+external int _ptySetMode(ffi.Pointer<PtyContext> ctx, int mode);
 
-typedef PtyGetModeNative = ffi.Int32 Function(ffi.Pointer<PtyContext> ctx);
-typedef PtyGetMode = int Function(ffi.Pointer<PtyContext> ctx);
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<PtyContext>)>(
+    symbol: 'pty_get_mode')
+external int _ptyGetMode(ffi.Pointer<PtyContext> ctx);
 
-typedef PtyCloseNative = ffi.Void Function(ffi.Pointer<PtyContext> ctx);
-typedef PtyClose = void Function(ffi.Pointer<PtyContext> ctx);
+@ffi.Native<ffi.Void Function(ffi.Pointer<PtyContext>)>(symbol: 'pty_close')
+external void _ptyClose(ffi.Pointer<PtyContext> ctx);
 
-typedef PtyFreeNative = ffi.Void Function(ffi.Pointer<ffi.Void> ptr);
-typedef PtyFree = void Function(ffi.Pointer<ffi.Void> ptr);
-
-// Load the native library
-ffi.DynamicLibrary _loadLibrary() {
-  // Try environment variable first for flexibility
-  final libraryPath = Platform.environment['NATIVE_PTY_LIBRARY_PATH'];
-  if (libraryPath != null && libraryPath.isNotEmpty) {
-    return ffi.DynamicLibrary.open(libraryPath);
-  }
-
-  // Default paths based on platform
-  if (Platform.isLinux) {
-    return ffi.DynamicLibrary.open('lib/linux/libpty_bridge.so');
-  } else if (Platform.isMacOS) {
-    return ffi.DynamicLibrary.open('lib/macos/libpty_bridge.dylib');
-  } else {
-    throw UnsupportedError(
-        'Platform ${Platform.operatingSystem} is not supported');
-  }
-}
+@ffi.Native<ffi.Void Function(ffi.Pointer<ffi.Void>)>(symbol: 'pty_free')
+external void _ptyFree(ffi.Pointer<ffi.Void> ptr);
 
 /// Exception thrown when PTY operations fail.
 class PtyException implements Exception {
@@ -155,17 +144,6 @@ class PtyException implements Exception {
 ///
 /// Use the static [spawn] method to create a new NativePty instance.
 class NativePty {
-  late final ffi.DynamicLibrary _lib;
-  late final PtyInit _ptyInit;
-  late final PtySpawn _ptySpawn;
-  late final PtyWrite _ptyWrite;
-  late final PtyResize _ptyResize;
-  late final PtyKill _ptyKill;
-  late final PtySetMode _ptySetMode;
-  late final PtyGetMode _ptyGetMode;
-  late final PtyClose _ptyClose;
-  late final PtyFree _ptyFree;
-
   late final ffi.Pointer<PtyContext> _context;
   late final ffi.NativeCallable<PtyDataCallbackNative> _nativeCallback;
   late final ffi.NativeCallable<PtyExitCallbackNative> _nativeExitCallback;
@@ -177,22 +155,8 @@ class NativePty {
   /// Private constructor. Use [NativePty.spawn] to create instances.
   NativePty._();
 
-  /// Initializes the FFI bindings and sets up the callbacks.
+  /// Initializes the callbacks and UTF-8 decoder.
   void _init() {
-    _lib = _loadLibrary();
-
-    _ptyInit = _lib.lookupFunction<PtyInitNative, PtyInit>('pty_init');
-    _ptySpawn = _lib.lookupFunction<PtySpawnNative, PtySpawn>('pty_spawn');
-    _ptyWrite = _lib.lookupFunction<PtyWriteNative, PtyWrite>('pty_write');
-    _ptyResize = _lib.lookupFunction<PtyResizeNative, PtyResize>('pty_resize');
-    _ptyKill = _lib.lookupFunction<PtyKillNative, PtyKill>('pty_kill');
-    _ptySetMode =
-        _lib.lookupFunction<PtySetModeNative, PtySetMode>('pty_set_mode');
-    _ptyGetMode =
-        _lib.lookupFunction<PtyGetModeNative, PtyGetMode>('pty_get_mode');
-    _ptyClose = _lib.lookupFunction<PtyCloseNative, PtyClose>('pty_close');
-    _ptyFree = _lib.lookupFunction<PtyFreeNative, PtyFree>('pty_free');
-
     // Initialize the PTY system
     _ptyInit();
 
@@ -286,7 +250,7 @@ class NativePty {
     }
 
     try {
-      final context = pty._ptySpawn(
+      final context = _ptySpawn(
           commandPtr,
           argvPtr,
           envpPtr,
