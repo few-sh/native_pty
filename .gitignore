@@ -1,3 +1,15 @@
 # https://dart.dev/guides/libraries/private-files
 # Created by `dart pub`
 .dart_tool/
+
+# Native build artifacts
+*.o
+*.so
+*.dylib
+*.dll
+lib/linux/
+lib/macos/
+lib/windows/
+
+# Test helper binaries
+bin/utf8_boundary_test_helper
