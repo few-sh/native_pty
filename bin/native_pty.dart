@@ -20,32 +20,29 @@ void main(List<String> arguments) async {
   print('=' * 50);
   print('');
 
-  final pty = NativePty();
+  try {
+    final pty = NativePty.spawn(command, args);
 
-  // Listen to the output stream
-  pty.stream.listen(
-    (data) {
-      stdout.write(data);
-    },
-    onDone: () {
-      print('\n--- Process terminated ---');
-    },
-    onError: (error) {
-      stderr.writeln('Error: $error');
-    },
-  );
+    // Listen to the output stream
+    pty.stream.listen(
+      (data) {
+        stdout.write(data);
+      },
+      onDone: () {
+        print('\n--- Process terminated ---');
+      },
+      onError: (error) {
+        stderr.writeln('Error: $error');
+      },
+    );
 
-  // Spawn the command
-  final success = pty.spawn(command, args);
-  if (!success) {
-    print('Failed to spawn process: $command');
+    // Wait for process to complete
+    await Future.delayed(Duration(seconds: 3));
+
+    // Close the PTY
+    pty.close();
+  } on PtyException catch (e) {
+    print('Failed to spawn process: $e');
     exit(1);
   }
-
-  // Wait for process to complete
-  await Future.delayed(Duration(seconds: 3));
-
-  // Close the PTY
-  pty.close();
 }
-

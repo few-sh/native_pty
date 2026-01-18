@@ -60,84 +60,87 @@ int main() {
 
   print('Test program compiled successfully.\n');
 
-  final pty = NativePty();
-
   var callbackCount = 0;
   final outputBuffer = StringBuffer();
   final receivedChunks = <String>[];
 
-  // Listen to the output stream and count chunks
-  pty.stream.listen(
-    (data) {
-      callbackCount++;
-      receivedChunks.add(data);
-      outputBuffer.write(data);
-      
-      // Show bytes for debugging
-      final bytes = data.codeUnits;
-      final bytesHex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
-      print('Callback #$callbackCount: ${data.length} chars, bytes: $bytesHex');
-      print('  Content: "${data.replaceAll('\n', '\\n')}"');
-    },
-    onDone: () {
-      print('\n--- PTY stream closed ---');
-    },
-    onError: (error) {
-      print('Error: $error');
-    },
-  );
+  try {
+    // Spawn the test program
+    final pty =
+        NativePty.spawn('/tmp/utf8_split_test', ['/tmp/utf8_split_test']);
 
-  // Spawn the test program
-  final success = pty.spawn('/tmp/utf8_split_test', ['/tmp/utf8_split_test']);
+    // Listen to the output stream and count chunks
+    pty.stream.listen(
+      (data) {
+        callbackCount++;
+        receivedChunks.add(data);
+        outputBuffer.write(data);
 
-  if (!success) {
-    print('Failed to spawn test program');
+        // Show bytes for debugging
+        final bytes = data.codeUnits;
+        final bytesHex =
+            bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
+        print(
+            'Callback #$callbackCount: ${data.length} chars, bytes: $bytesHex');
+        print('  Content: "${data.replaceAll('\n', '\\n')}"');
+      },
+      onDone: () {
+        print('\n--- PTY stream closed ---');
+      },
+      onError: (error) {
+        print('Error: $error');
+      },
+    );
+
+    print('Test program spawned, forcing UTF-8 split...\n');
+
+    // Wait for all output
+    await Future.delayed(Duration(seconds: 2));
+
+    pty.close();
+
+    await Future.delayed(Duration(milliseconds: 500));
+
+    // Verify results
+    print('\n=== Test Results ===');
+    print('Total callbacks received: $callbackCount');
+
+    final output = outputBuffer.toString();
+    print('Total output: "${output.replaceAll('\n', '\\n')}"');
+
+    // Check if we got the complete sequence
+    final hasStart = output.contains('START:');
+    final hasEmoji = output.contains('🚀');
+    final hasEnd = output.contains(':END');
+
+    print('\nVerification:');
+    print('  START marker: ${hasStart ? "✓" : "✗"}');
+    print('  Emoji (🚀): ${hasEmoji ? "✓" : "✗"}');
+    print('  END marker: ${hasEnd ? "✓" : "✗"}');
+
+    // The expected behavior is that the stateful Utf8Decoder will:
+    // 1. Receive first 2 bytes (F0 9F) - decoder waits for more bytes
+    // 2. Receive next 2 bytes (9A 80) - decoder completes the character
+    // Result: The emoji appears correctly in the output
+
+    if (hasStart && hasEmoji && hasEnd) {
+      print('\n✅ SUCCESS!');
+      print(
+          'The stateful Utf8Decoder correctly handled a 4-byte UTF-8 character');
+      print('that was split across multiple read operations.');
+      print('This confirms the fix prevents data loss at buffer boundaries.');
+    } else {
+      print('\n❌ FAILED!');
+      if (!hasEmoji) {
+        print(
+            'The emoji was lost or corrupted - UTF-8 decoder may not be stateful!');
+      }
+    }
+  } on PtyException catch (e) {
+    print('Failed to spawn test program: $e');
     exit(1);
   }
 
-  print('Test program spawned, forcing UTF-8 split...\n');
-
-  // Wait for all output
-  await Future.delayed(Duration(seconds: 2));
-
-  pty.close();
-
-  await Future.delayed(Duration(milliseconds: 500));
-
-  // Verify results
-  print('\n=== Test Results ===');
-  print('Total callbacks received: $callbackCount');
-  
-  final output = outputBuffer.toString();
-  print('Total output: "${output.replaceAll('\n', '\\n')}"');
-  
-  // Check if we got the complete sequence
-  final hasStart = output.contains('START:');
-  final hasEmoji = output.contains('🚀');
-  final hasEnd = output.contains(':END');
-  
-  print('\nVerification:');
-  print('  START marker: ${hasStart ? "✓" : "✗"}');
-  print('  Emoji (🚀): ${hasEmoji ? "✓" : "✗"}');
-  print('  END marker: ${hasEnd ? "✓" : "✗"}');
-  
-  // The expected behavior is that the stateful Utf8Decoder will:
-  // 1. Receive first 2 bytes (F0 9F) - decoder waits for more bytes
-  // 2. Receive next 2 bytes (9A 80) - decoder completes the character
-  // Result: The emoji appears correctly in the output
-  
-  if (hasStart && hasEmoji && hasEnd) {
-    print('\n✅ SUCCESS!');
-    print('The stateful Utf8Decoder correctly handled a 4-byte UTF-8 character');
-    print('that was split across multiple read operations.');
-    print('This confirms the fix prevents data loss at buffer boundaries.');
-  } else {
-    print('\n❌ FAILED!');
-    if (!hasEmoji) {
-      print('The emoji was lost or corrupted - UTF-8 decoder may not be stateful!');
-    }
-  }
-  
   // Cleanup
   await tmpFile.delete();
   await File('/tmp/utf8_split_test').delete();

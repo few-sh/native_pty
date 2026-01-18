@@ -131,14 +131,29 @@ ffi.DynamicLibrary _loadLibrary() {
   } else if (Platform.isMacOS) {
     return ffi.DynamicLibrary.open('lib/macos/libpty_bridge.dylib');
   } else {
-    throw UnsupportedError('Platform ${Platform.operatingSystem} is not supported');
+    throw UnsupportedError(
+        'Platform ${Platform.operatingSystem} is not supported');
   }
+}
+
+/// Exception thrown when PTY operations fail.
+class PtyException implements Exception {
+  /// The error message describing what went wrong.
+  final String message;
+
+  /// Creates a new PtyException with the given [message].
+  PtyException(this.message);
+
+  @override
+  String toString() => 'PtyException: $message';
 }
 
 /// A native pseudo-terminal (PTY) interface for Dart.
 ///
 /// This class provides a high-level API for spawning processes with a PTY
 /// and communicating with them through a Stream interface.
+///
+/// Use the static [spawn] method to create a new NativePty instance.
 class NativePty {
   late final ffi.DynamicLibrary _lib;
   late final PtyInit _ptyInit;
@@ -151,7 +166,7 @@ class NativePty {
   late final PtyClose _ptyClose;
   late final PtyFree _ptyFree;
 
-  ffi.Pointer<PtyContext>? _context;
+  late final ffi.Pointer<PtyContext> _context;
   late final ffi.NativeCallable<PtyDataCallbackNative> _nativeCallback;
   late final ffi.NativeCallable<PtyExitCallbackNative> _nativeExitCallback;
   final StreamController<String> _controller = StreamController<String>();
@@ -159,10 +174,11 @@ class NativePty {
   final Completer<int> _exitCodeCompleter = Completer<int>();
   bool _closed = false;
 
-  /// Creates a new NativePty instance.
-  ///
-  /// This initializes the FFI bindings and sets up the data callback.
-  NativePty() {
+  /// Private constructor. Use [NativePty.spawn] to create instances.
+  NativePty._();
+
+  /// Initializes the FFI bindings and sets up the callbacks.
+  void _init() {
     _lib = _loadLibrary();
 
     _ptyInit = _lib.lookupFunction<PtyInitNative, PtyInit>('pty_init');
@@ -170,8 +186,10 @@ class NativePty {
     _ptyWrite = _lib.lookupFunction<PtyWriteNative, PtyWrite>('pty_write');
     _ptyResize = _lib.lookupFunction<PtyResizeNative, PtyResize>('pty_resize');
     _ptyKill = _lib.lookupFunction<PtyKillNative, PtyKill>('pty_kill');
-    _ptySetMode = _lib.lookupFunction<PtySetModeNative, PtySetMode>('pty_set_mode');
-    _ptyGetMode = _lib.lookupFunction<PtyGetModeNative, PtyGetMode>('pty_get_mode');
+    _ptySetMode =
+        _lib.lookupFunction<PtySetModeNative, PtySetMode>('pty_set_mode');
+    _ptyGetMode =
+        _lib.lookupFunction<PtyGetModeNative, PtyGetMode>('pty_get_mode');
     _ptyClose = _lib.lookupFunction<PtyCloseNative, PtyClose>('pty_close');
     _ptyFree = _lib.lookupFunction<PtyFreeNative, PtyFree>('pty_free');
 
@@ -188,7 +206,7 @@ class NativePty {
     // Set up the native callback
     _nativeCallback =
         ffi.NativeCallable<PtyDataCallbackNative>.listener(_onData);
-    
+
     // Set up the exit callback
     _nativeExitCallback =
         ffi.NativeCallable<PtyExitCallbackNative>.listener(_onExit);
@@ -217,7 +235,7 @@ class NativePty {
     }
   }
 
-  /// Spawns a new process with a PTY.
+  /// Spawns a new process with a PTY and returns a [NativePty] instance.
   ///
   /// [command] is the path to the executable to run.
   /// [args] is the list of arguments to pass to the command (including argv[0]).
@@ -227,11 +245,13 @@ class NativePty {
   /// If null, the current working directory is used.
   /// [mode] is the terminal mode to use. Defaults to [TerminalMode.canonical].
   ///
-  /// Returns true if the spawn was successful, false otherwise.
-  bool spawn(String command, List<String> args, {Map<String, String>? environment, String? workingDirectory, TerminalMode mode = TerminalMode.canonical}) {
-    if (_context != null) {
-      throw StateError('PTY already spawned');
-    }
+  /// Throws [PtyException] if the spawn fails.
+  static NativePty spawn(String command, List<String> args,
+      {Map<String, String>? environment,
+      String? workingDirectory,
+      TerminalMode mode = TerminalMode.canonical}) {
+    final pty = NativePty._();
+    pty._init();
 
     // Allocate memory for command
     final commandPtr = command.toNativeUtf8(allocator: calloc);
@@ -246,13 +266,12 @@ class NativePty {
     // Allocate memory for environment array (null-terminated) if provided
     ffi.Pointer<ffi.Pointer<Utf8>> envpPtr = ffi.nullptr;
     List<String>? envStrings;
-    
+
     if (environment != null) {
       // Convert map to KEY=VALUE strings
-      envStrings = environment.entries
-          .map((e) => '${e.key}=${e.value}')
-          .toList();
-      
+      envStrings =
+          environment.entries.map((e) => '${e.key}=${e.value}').toList();
+
       envpPtr = calloc<ffi.Pointer<Utf8>>(envStrings.length + 1);
       for (var i = 0; i < envStrings.length; i++) {
         envpPtr[i] = envStrings[i].toNativeUtf8(allocator: calloc);
@@ -267,13 +286,24 @@ class NativePty {
     }
 
     try {
-      _context = _ptySpawn(commandPtr, argvPtr, envpPtr, cwdPtr, mode.value, _nativeCallback.nativeFunction, _nativeExitCallback.nativeFunction);
+      final context = pty._ptySpawn(
+          commandPtr,
+          argvPtr,
+          envpPtr,
+          cwdPtr,
+          mode.value,
+          pty._nativeCallback.nativeFunction,
+          pty._nativeExitCallback.nativeFunction);
 
-      if (_context == null || _context == ffi.nullptr) {
-        return false;
+      if (context == ffi.nullptr) {
+        pty._nativeCallback.close();
+        pty._nativeExitCallback.close();
+        pty._controller.close();
+        throw PtyException('Failed to spawn PTY process for command: $command');
       }
 
-      return true;
+      pty._context = context;
+      return pty;
     } finally {
       // Clean up allocated memory
       calloc.free(commandPtr);
@@ -281,7 +311,7 @@ class NativePty {
         calloc.free(argvPtr[i]);
       }
       calloc.free(argvPtr);
-      
+
       // Clean up environment memory if allocated
       if (envpPtr != ffi.nullptr && envStrings != null) {
         for (var i = 0; i < envStrings.length; i++) {
@@ -301,10 +331,11 @@ class NativePty {
   ///
   /// [data] is the string to write to the PTY.
   ///
-  /// Returns the number of bytes written, or -1 on error.
+  /// Returns the number of bytes written.
+  /// Throws [PtyException] on error.
   int write(String data) {
-    if (_context == null || _context == ffi.nullptr) {
-      throw StateError('PTY not spawned');
+    if (_closed) {
+      throw StateError('PTY is closed');
     }
 
     final bytes = utf8.encode(data);
@@ -317,7 +348,11 @@ class NativePty {
       final nativeBytes = dataPtr.asTypedList(length);
       nativeBytes.setAll(0, bytes);
 
-      return _ptyWrite(_context!, dataPtr, length);
+      final result = _ptyWrite(_context, dataPtr, length);
+      if (result < 0) {
+        throw PtyException('Failed to write to PTY');
+      }
+      return result;
     } finally {
       calloc.free(dataPtr);
     }
@@ -328,13 +363,16 @@ class NativePty {
   /// [rows] is the number of rows (height).
   /// [cols] is the number of columns (width).
   ///
-  /// Returns 0 on success, -1 on error.
-  int resize(int rows, int cols) {
-    if (_context == null || _context == ffi.nullptr) {
-      throw StateError('PTY not spawned');
+  /// Throws [PtyException] on error.
+  void resize(int rows, int cols) {
+    if (_closed) {
+      throw StateError('PTY is closed');
     }
 
-    return _ptyResize(_context!, rows, cols);
+    final result = _ptyResize(_context, rows, cols);
+    if (result < 0) {
+      throw PtyException('Failed to resize PTY to ${rows}x$cols');
+    }
   }
 
   /// Sends a signal to the PTY process.
@@ -347,15 +385,18 @@ class NativePty {
   /// - ProcessSignal.sigint.signalNumber (2): Interrupt (Ctrl+C)
   /// - ProcessSignal.sighup.signalNumber (1): Hangup
   ///
-  /// Returns 0 on success, -1 on error.
-  int kill([int? signal]) {
-    if (_context == null || _context == ffi.nullptr) {
-      throw StateError('PTY not spawned');
+  /// Throws [PtyException] on error.
+  void kill([int? signal]) {
+    if (_closed) {
+      throw StateError('PTY is closed');
     }
 
     // Default to SIGTERM if no signal specified
     final sig = signal ?? ProcessSignal.sigterm.signalNumber;
-    return _ptyKill(_context!, sig);
+    final result = _ptyKill(_context, sig);
+    if (result < 0) {
+      throw PtyException('Failed to send signal $sig to PTY process');
+    }
   }
 
   /// Sets the terminal mode for the PTY.
@@ -367,26 +408,30 @@ class NativePty {
   /// - [TerminalMode.cbreak]: Character-at-a-time input with signal processing
   /// - [TerminalMode.raw]: Raw mode with no processing (for vim, less, etc.)
   ///
-  /// Returns 0 on success, -1 on error.
-  int setMode(TerminalMode mode) {
-    if (_context == null || _context == ffi.nullptr) {
-      throw StateError('PTY not spawned');
+  /// Throws [PtyException] on error.
+  void setMode(TerminalMode mode) {
+    if (_closed) {
+      throw StateError('PTY is closed');
     }
 
-    return _ptySetMode(_context!, mode.value);
+    final result = _ptySetMode(_context, mode.value);
+    if (result < 0) {
+      throw PtyException('Failed to set terminal mode to ${mode.name}');
+    }
   }
 
   /// Gets the current terminal mode of the PTY.
   ///
-  /// Returns the current [TerminalMode], or throws an exception on error.
+  /// Returns the current [TerminalMode].
+  /// Throws [PtyException] on error.
   TerminalMode getMode() {
-    if (_context == null || _context == ffi.nullptr) {
-      throw StateError('PTY not spawned');
+    if (_closed) {
+      throw StateError('PTY is closed');
     }
 
-    final modeValue = _ptyGetMode(_context!);
+    final modeValue = _ptyGetMode(_context);
     if (modeValue < 0) {
-      throw StateError('Failed to get terminal mode');
+      throw PtyException('Failed to get terminal mode');
     }
     return TerminalMode.fromValue(modeValue);
   }
@@ -414,10 +459,7 @@ class NativePty {
 
     _closed = true;
 
-    if (_context != null && _context != ffi.nullptr) {
-      _ptyClose(_context!);
-      _context = null;
-    }
+    _ptyClose(_context);
 
     // Close the UTF-8 sink to flush any pending bytes
     _utf8Sink.close();

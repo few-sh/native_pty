@@ -1,6 +1,6 @@
 name: native_pty
 description: A native pseudo-terminal library for Dart using FFI
-version: 0.0.1
+version: 0.1.0
 # repository: https://github.com/few-sh/native_pty
 
 environment:

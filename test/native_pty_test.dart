@@ -4,17 +4,9 @@ import 'dart:io';
 
 void main() {
   group('NativePty', () {
-    test('can be instantiated', () {
-      final pty = NativePty();
+    test('spawn returns a NativePty instance', () async {
+      final pty = NativePty.spawn('/bin/echo', ['/bin/echo', 'hello']);
       expect(pty, isNotNull);
-      pty.close();
-    });
-
-    test('can spawn a process', () async {
-      final pty = NativePty();
-      
-      final success = pty.spawn('/bin/echo', ['/bin/echo', 'hello']);
-      expect(success, isTrue);
 
       // Wait a bit for output
       await Future.delayed(Duration(milliseconds: 500));
@@ -23,15 +15,12 @@ void main() {
     });
 
     test('receives output from spawned process', () async {
-      final pty = NativePty();
-      
+      final pty = NativePty.spawn('/bin/echo', ['/bin/echo', 'test_output']);
+
       final outputBuffer = StringBuffer();
       pty.stream.listen((data) {
         outputBuffer.write(data);
       });
-
-      final success = pty.spawn('/bin/echo', ['/bin/echo', 'test_output']);
-      expect(success, isTrue);
 
       // Wait for output
       await Future.delayed(Duration(seconds: 1));
@@ -42,15 +31,12 @@ void main() {
     });
 
     test('can write to PTY', () async {
-      final pty = NativePty();
-      
+      final pty = NativePty.spawn('/bin/cat', ['/bin/cat']);
+
       final outputBuffer = StringBuffer();
       pty.stream.listen((data) {
         outputBuffer.write(data);
       });
-
-      final success = pty.spawn('/bin/cat', ['/bin/cat']);
-      expect(success, isTrue);
 
       await Future.delayed(Duration(milliseconds: 200));
 
@@ -66,51 +52,45 @@ void main() {
     });
 
     test('can resize window', () async {
-      final pty = NativePty();
-      
-      final success = pty.spawn('/bin/bash', ['/bin/bash', '-i']);
-      expect(success, isTrue);
+      final pty = NativePty.spawn('/bin/bash', ['/bin/bash', '-i']);
 
       await Future.delayed(Duration(milliseconds: 200));
 
-      // Resize window
-      final result = pty.resize(50, 120);
-      expect(result, equals(0));
+      // Resize window - should not throw
+      pty.resize(50, 120);
 
       pty.close();
     });
 
-    test('throws StateError when writing to non-spawned PTY', () {
-      final pty = NativePty();
-      
+    test('throws StateError when writing to closed PTY', () async {
+      final pty = NativePty.spawn('/bin/echo', ['/bin/echo', 'test']);
+
+      await Future.delayed(Duration(milliseconds: 500));
+      pty.close();
+
       expect(() => pty.write('test'), throwsStateError);
-      
-      pty.close();
     });
 
-    test('throws StateError when resizing non-spawned PTY', () {
-      final pty = NativePty();
-      
+    test('throws StateError when resizing closed PTY', () async {
+      final pty = NativePty.spawn('/bin/echo', ['/bin/echo', 'test']);
+
+      await Future.delayed(Duration(milliseconds: 500));
+      pty.close();
+
       expect(() => pty.resize(24, 80), throwsStateError);
-      
-      pty.close();
     });
 
-    test('throws StateError when spawning twice', () {
-      final pty = NativePty();
-      
-      pty.spawn('/bin/echo', ['/bin/echo', 'test']);
-      
+    test('throws PtyException when spawning invalid command', () {
       expect(
-        () => pty.spawn('/bin/echo', ['/bin/echo', 'test2']),
-        throwsStateError,
+        () => NativePty.spawn('/nonexistent/command', ['/nonexistent/command']),
+        throwsA(isA<PtyException>()),
       );
-      
-      pty.close();
     });
 
     test('handles high-output without memory issues', () async {
-      final pty = NativePty();
+      // Spawn a command that produces a lot of output
+      final pty = NativePty.spawn('/bin/bash',
+          ['/bin/bash', '-c', 'yes "Hello World" | head -n 10000']);
 
       var totalBytes = 0;
       var chunkCount = 0;
@@ -119,11 +99,6 @@ void main() {
         totalBytes += data.length;
         chunkCount++;
       });
-
-      // Spawn a command that produces a lot of output
-      final success = pty.spawn(
-          '/bin/bash', ['/bin/bash', '-c', 'yes "Hello World" | head -n 10000']);
-      expect(success, isTrue);
 
       // Wait for the command to complete
       await Future.delayed(Duration(seconds: 5));
@@ -136,20 +111,15 @@ void main() {
     });
 
     test('handles UTF-8 characters correctly', () async {
-      final pty = NativePty();
-
       final outputBuffer = StringBuffer();
+
+      // Test with multi-byte UTF-8 characters
+      final pty = NativePty.spawn(
+          '/bin/bash', ['/bin/bash', '-c', 'echo "Hello 世界 🌍 测试 🚀"']);
+
       pty.stream.listen((data) {
         outputBuffer.write(data);
       });
-
-      // Test with multi-byte UTF-8 characters
-      final success = pty.spawn('/bin/bash', [
-        '/bin/bash',
-        '-c',
-        'echo "Hello 世界 🌍 测试 🚀"'
-      ]);
-      expect(success, isTrue);
 
       await Future.delayed(Duration(seconds: 1));
 
@@ -163,21 +133,16 @@ void main() {
     });
 
     test('handles UTF-8 characters split across buffer boundaries', () async {
-      final pty = NativePty();
-
-      var callbackCount = 0;
       final outputBuffer = StringBuffer();
-
-      pty.stream.listen((data) {
-        callbackCount++;
-        outputBuffer.write(data);
-      });
 
       // Use C helper program to create a scenario where UTF-8 character is split
       // Helper writes 4090 bytes then a 4-byte emoji, then completion message
       final helperPath = 'bin/utf8_boundary_test_helper';
-      final success = pty.spawn(helperPath, [helperPath]);
-      expect(success, isTrue);
+      final pty = NativePty.spawn(helperPath, [helperPath]);
+
+      pty.stream.listen((data) {
+        outputBuffer.write(data);
+      });
 
       await Future.delayed(Duration(seconds: 2));
 
@@ -192,12 +157,7 @@ void main() {
     });
 
     test('can set custom environment variables', () async {
-      final pty = NativePty();
-
       final outputBuffer = StringBuffer();
-      pty.stream.listen((data) {
-        outputBuffer.write(data);
-      });
 
       // Spawn bash with custom environment variables
       final customEnv = {
@@ -206,12 +166,19 @@ void main() {
         'PATH': Platform.environment['PATH'] ?? '/usr/bin:/bin',
       };
 
-      final success = pty.spawn(
+      final pty = NativePty.spawn(
         '/bin/bash',
-        ['/bin/bash', '-c', r'echo "TEST_VAR_1=$TEST_VAR_1" && echo "TEST_VAR_2=$TEST_VAR_2"'],
+        [
+          '/bin/bash',
+          '-c',
+          r'echo "TEST_VAR_1=$TEST_VAR_1" && echo "TEST_VAR_2=$TEST_VAR_2"'
+        ],
         environment: customEnv,
       );
-      expect(success, isTrue);
+
+      pty.stream.listen((data) {
+        outputBuffer.write(data);
+      });
 
       await Future.delayed(Duration(seconds: 1));
 
@@ -223,14 +190,11 @@ void main() {
     });
 
     test('reports exit code for successful process', () async {
-      final pty = NativePty();
+      final pty = NativePty.spawn('/bin/bash', ['/bin/bash', '-c', 'exit 0']);
 
       pty.stream.listen((data) {
         // Consume output
       });
-
-      final success = pty.spawn('/bin/bash', ['/bin/bash', '-c', 'exit 0']);
-      expect(success, isTrue);
 
       final exitCode = await pty.exitCode;
       expect(exitCode, equals(0));
@@ -239,14 +203,11 @@ void main() {
     });
 
     test('reports exit code for failed process', () async {
-      final pty = NativePty();
+      final pty = NativePty.spawn('/bin/bash', ['/bin/bash', '-c', 'exit 42']);
 
       pty.stream.listen((data) {
         // Consume output
       });
-
-      final success = pty.spawn('/bin/bash', ['/bin/bash', '-c', 'exit 42']);
-      expect(success, isTrue);
 
       final exitCode = await pty.exitCode;
       expect(exitCode, equals(42));
@@ -255,14 +216,11 @@ void main() {
     });
 
     test('exitCode is awaitable', () async {
-      final pty = NativePty();
+      final pty = NativePty.spawn('/bin/echo', ['/bin/echo', 'test']);
 
       pty.stream.listen((data) {
         // Consume output
       });
-
-      final success = pty.spawn('/bin/echo', ['/bin/echo', 'test']);
-      expect(success, isTrue);
 
       // The exitCode future should complete
       final exitCode = await pty.exitCode.timeout(Duration(seconds: 2));
@@ -272,20 +230,17 @@ void main() {
     });
 
     test('can send SIGTERM signal', () async {
-      final pty = NativePty();
+      final pty =
+          NativePty.spawn('/bin/bash', ['/bin/bash', '-c', 'sleep 100']);
 
       pty.stream.listen((data) {
         // Consume output
       });
 
-      final success = pty.spawn('/bin/bash', ['/bin/bash', '-c', 'sleep 100']);
-      expect(success, isTrue);
-
       await Future.delayed(Duration(milliseconds: 200));
 
-      // Send SIGTERM
-      final result = pty.kill(ProcessSignal.sigterm.signalNumber);
-      expect(result, equals(0));
+      // Send SIGTERM - should not throw
+      pty.kill(ProcessSignal.sigterm.signalNumber);
 
       final exitCode = await pty.exitCode;
       // Process killed by SIGTERM should have exit code 128 + 15 = 143
@@ -295,20 +250,17 @@ void main() {
     });
 
     test('can send SIGKILL signal', () async {
-      final pty = NativePty();
+      final pty =
+          NativePty.spawn('/bin/bash', ['/bin/bash', '-c', 'sleep 100']);
 
       pty.stream.listen((data) {
         // Consume output
       });
 
-      final success = pty.spawn('/bin/bash', ['/bin/bash', '-c', 'sleep 100']);
-      expect(success, isTrue);
-
       await Future.delayed(Duration(milliseconds: 500));
 
-      // Send SIGKILL
-      final result = pty.kill(ProcessSignal.sigkill.signalNumber);
-      expect(result, equals(0));
+      // Send SIGKILL - should not throw
+      pty.kill(ProcessSignal.sigkill.signalNumber);
 
       final exitCode = await pty.exitCode.timeout(Duration(seconds: 3));
       // Process killed by SIGKILL should have exit code 128 + 9 = 137
@@ -318,20 +270,17 @@ void main() {
     });
 
     test('kill uses default SIGTERM when no signal specified', () async {
-      final pty = NativePty();
+      final pty =
+          NativePty.spawn('/bin/bash', ['/bin/bash', '-c', 'sleep 100']);
 
       pty.stream.listen((data) {
         // Consume output
       });
 
-      final success = pty.spawn('/bin/bash', ['/bin/bash', '-c', 'sleep 100']);
-      expect(success, isTrue);
-
       await Future.delayed(Duration(milliseconds: 500));
 
-      // Send default signal (SIGTERM)
-      final result = pty.kill();
-      expect(result, equals(0));
+      // Send default signal (SIGTERM) - should not throw
+      pty.kill();
 
       final exitCode = await pty.exitCode.timeout(Duration(seconds: 3));
       // Process killed by SIGTERM should have exit code 128 + 15 = 143
@@ -340,29 +289,28 @@ void main() {
       pty.close();
     });
 
-    test('throws StateError when killing non-spawned PTY', () {
-      final pty = NativePty();
-      
-      expect(() => pty.kill(), throwsStateError);
-      
+    test('throws StateError when killing closed PTY', () async {
+      final pty = NativePty.spawn('/bin/echo', ['/bin/echo', 'test']);
+
+      await Future.delayed(Duration(milliseconds: 500));
       pty.close();
+
+      expect(() => pty.kill(), throwsStateError);
     });
 
     test('can set custom working directory', () async {
-      final pty = NativePty();
-
       final outputBuffer = StringBuffer();
-      pty.stream.listen((data) {
-        outputBuffer.write(data);
-      });
 
       // Spawn bash with custom working directory
-      final success = pty.spawn(
+      final pty = NativePty.spawn(
         '/bin/bash',
         ['/bin/bash', '-c', 'pwd'],
         workingDirectory: '/tmp',
       );
-      expect(success, isTrue);
+
+      pty.stream.listen((data) {
+        outputBuffer.write(data);
+      });
 
       await Future.delayed(Duration(seconds: 1));
 
@@ -373,22 +321,20 @@ void main() {
     });
 
     test('uses current directory when workingDirectory is null', () async {
-      final pty = NativePty();
-
       final outputBuffer = StringBuffer();
-      pty.stream.listen((data) {
-        outputBuffer.write(data);
-      });
 
       // Get current directory
       final currentDir = Directory.current.path;
 
       // Spawn bash without custom working directory
-      final success = pty.spawn(
+      final pty = NativePty.spawn(
         '/bin/bash',
         ['/bin/bash', '-c', 'pwd'],
       );
-      expect(success, isTrue);
+
+      pty.stream.listen((data) {
+        outputBuffer.write(data);
+      });
 
       await Future.delayed(Duration(seconds: 1));
 
@@ -399,22 +345,25 @@ void main() {
     });
 
     test('can create files in custom working directory', () async {
-      final pty = NativePty();
-
       final outputBuffer = StringBuffer();
+
+      final testFile =
+          'native_pty_test_${DateTime.now().millisecondsSinceEpoch}.txt';
+
+      // Spawn bash with custom working directory and create a file
+      final pty = NativePty.spawn(
+        '/bin/bash',
+        [
+          '/bin/bash',
+          '-c',
+          'echo "test" > $testFile && pwd && ls $testFile && rm $testFile'
+        ],
+        workingDirectory: '/tmp',
+      );
+
       pty.stream.listen((data) {
         outputBuffer.write(data);
       });
-
-      final testFile = 'native_pty_test_${DateTime.now().millisecondsSinceEpoch}.txt';
-
-      // Spawn bash with custom working directory and create a file
-      final success = pty.spawn(
-        '/bin/bash',
-        ['/bin/bash', '-c', 'echo "test" > $testFile && pwd && ls $testFile && rm $testFile'],
-        workingDirectory: '/tmp',
-      );
-      expect(success, isTrue);
 
       await Future.delayed(Duration(seconds: 1));
 
@@ -426,19 +375,17 @@ void main() {
     });
 
     test('can spawn with canonical mode (default)', () async {
-      final pty = NativePty();
-      
       final outputBuffer = StringBuffer();
-      pty.stream.listen((data) {
-        outputBuffer.write(data);
-      });
 
-      final success = pty.spawn(
+      final pty = NativePty.spawn(
         '/bin/bash',
         ['/bin/bash', '-c', 'echo "canonical"'],
         mode: TerminalMode.canonical,
       );
-      expect(success, isTrue);
+
+      pty.stream.listen((data) {
+        outputBuffer.write(data);
+      });
 
       await Future.delayed(Duration(seconds: 1));
 
@@ -448,19 +395,17 @@ void main() {
     });
 
     test('can spawn with cbreak mode', () async {
-      final pty = NativePty();
-      
       final outputBuffer = StringBuffer();
-      pty.stream.listen((data) {
-        outputBuffer.write(data);
-      });
 
-      final success = pty.spawn(
+      final pty = NativePty.spawn(
         '/bin/bash',
         ['/bin/bash', '-c', 'echo "cbreak"'],
         mode: TerminalMode.cbreak,
       );
-      expect(success, isTrue);
+
+      pty.stream.listen((data) {
+        outputBuffer.write(data);
+      });
 
       await Future.delayed(Duration(seconds: 1));
 
@@ -470,19 +415,17 @@ void main() {
     });
 
     test('can spawn with raw mode', () async {
-      final pty = NativePty();
-      
       final outputBuffer = StringBuffer();
-      pty.stream.listen((data) {
-        outputBuffer.write(data);
-      });
 
-      final success = pty.spawn(
+      final pty = NativePty.spawn(
         '/bin/cat',
         ['/bin/cat'],
         mode: TerminalMode.raw,
       );
-      expect(success, isTrue);
+
+      pty.stream.listen((data) {
+        outputBuffer.write(data);
+      });
 
       await Future.delayed(Duration(milliseconds: 500));
 
@@ -497,14 +440,11 @@ void main() {
     });
 
     test('can get terminal mode', () async {
-      final pty = NativePty();
-
-      final success = pty.spawn(
+      final pty = NativePty.spawn(
         '/bin/bash',
         ['/bin/bash'],
         mode: TerminalMode.cbreak,
       );
-      expect(success, isTrue);
 
       await Future.delayed(Duration(milliseconds: 200));
 
@@ -515,22 +455,18 @@ void main() {
     });
 
     test('can set terminal mode', () async {
-      final pty = NativePty();
-
-      final success = pty.spawn(
+      final pty = NativePty.spawn(
         '/bin/bash',
         ['/bin/bash'],
         mode: TerminalMode.canonical,
       );
-      expect(success, isTrue);
 
       await Future.delayed(Duration(milliseconds: 200));
 
       expect(pty.getMode(), equals(TerminalMode.canonical));
 
-      // Switch to raw mode
-      final result = pty.setMode(TerminalMode.raw);
-      expect(result, equals(0));
+      // Switch to raw mode - should not throw
+      pty.setMode(TerminalMode.raw);
       expect(pty.getMode(), equals(TerminalMode.raw));
 
       // Switch to cbreak mode
@@ -541,14 +477,11 @@ void main() {
     });
 
     test('terminal mode defaults to canonical', () async {
-      final pty = NativePty();
-
       // Spawn without specifying mode - should default to canonical
-      final success = pty.spawn(
+      final pty = NativePty.spawn(
         '/bin/bash',
         ['/bin/bash'],
       );
-      expect(success, isTrue);
 
       await Future.delayed(Duration(milliseconds: 200));
 
@@ -562,10 +495,9 @@ void main() {
       expect(TerminalMode.fromValue(0), equals(TerminalMode.canonical));
       expect(TerminalMode.fromValue(1), equals(TerminalMode.cbreak));
       expect(TerminalMode.fromValue(2), equals(TerminalMode.raw));
-      
+
       expect(() => TerminalMode.fromValue(3), throwsArgumentError);
       expect(() => TerminalMode.fromValue(-1), throwsArgumentError);
     });
   });
 }
-
