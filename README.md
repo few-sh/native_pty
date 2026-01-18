@@ -178,6 +178,40 @@ void main() async {
 }
 ```
 
+### Setting Terminal Mode
+
+```dart
+import 'dart:io';
+import 'package:native_pty/native_pty.dart';
+
+void main() async {
+  final pty = NativePty();
+
+  pty.stream.listen((data) => stdout.write(data));
+
+  // Spawn with raw mode (for vim, less, etc.)
+  pty.spawn(
+    '/bin/bash',
+    ['/bin/bash'],
+    mode: TerminalMode.raw,  // canonical (default), cbreak, or raw
+  );
+
+  await Future.delayed(Duration(milliseconds: 500));
+
+  // Change mode dynamically
+  pty.setMode(TerminalMode.canonical);
+  print('Current mode: ${pty.getMode()}');  // TerminalMode.canonical
+
+  await Future.delayed(Duration(seconds: 1));
+  pty.close();
+}
+```
+
+Terminal modes:
+- **`TerminalMode.canonical`** (default): Line buffering, character echoing, signal processing (Ctrl+C generates SIGINT)
+- **`TerminalMode.cbreak`**: Character-at-a-time input, echoing, signal processing
+- **`TerminalMode.raw`**: No buffering, no echoing, no signal processing - suitable for vim, emacs, less, top
+
 ### Sending Signals to Processes
 
 ```dart
@@ -214,11 +248,12 @@ void main() async {
 - `NativePty()` - Creates a new PTY instance
 
 #### Methods
-- `bool spawn(String command, List<String> args, {Map<String, String>? environment, String? workingDirectory})` - Spawns a process with the PTY
+- `bool spawn(String command, List<String> args, {Map<String, String>? environment, String? workingDirectory, TerminalMode mode})` - Spawns a process with the PTY
   - `command`: Full path to the executable
   - `args`: List of arguments (including argv[0])
   - `environment`: Optional map of environment variables (if null, inherits current process environment)
   - `workingDirectory`: Optional working directory for the process (if null, uses current directory)
+  - `mode`: Terminal mode (defaults to `TerminalMode.canonical`)
   - Returns: `true` on success, `false` on failure
 
 - `int write(String data)` - Writes data to the PTY
@@ -235,6 +270,13 @@ void main() async {
   - Common signals: `ProcessSignal.sigterm.signalNumber` (15), `ProcessSignal.sigkill.signalNumber` (9), `ProcessSignal.sigint.signalNumber` (2)
   - Returns: 0 on success, -1 on error
 
+- `int setMode(TerminalMode mode)` - Sets the terminal mode
+  - `mode`: Terminal mode to set (`canonical`, `cbreak`, or `raw`)
+  - Returns: 0 on success, -1 on error
+
+- `TerminalMode getMode()` - Gets the current terminal mode
+  - Returns: Current `TerminalMode`
+
 - `void close()` - Closes the PTY and terminates the process
 
 #### Properties
@@ -243,6 +285,14 @@ void main() async {
   - Exit code is 0-255 if the process exited normally
   - Exit code is 128 + signal number if killed by a signal
   - Exit code is -1 if the status could not be determined
+
+### `TerminalMode` Enum
+
+Defines the terminal input/output processing mode:
+
+- `TerminalMode.canonical` (0): Line buffering, character echoing, signal processing (default)
+- `TerminalMode.cbreak` (1): Character-at-a-time input, echoing, signal processing
+- `TerminalMode.raw` (2): No processing, no echoing, no signals - for full-screen applications
 
 ## Implementation Details
 

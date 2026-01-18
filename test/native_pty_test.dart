@@ -438,6 +438,148 @@ sys.stdout.flush()
       expect(output, contains('/tmp'));
       expect(output, contains(testFile));
     });
+
+    test('can spawn with canonical mode (default)', () async {
+      final pty = NativePty();
+      
+      final outputBuffer = StringBuffer();
+      pty.stream.listen((data) {
+        outputBuffer.write(data);
+      });
+
+      final success = pty.spawn(
+        '/bin/bash',
+        ['/bin/bash', '-c', 'echo "canonical"'],
+        mode: TerminalMode.canonical,
+      );
+      expect(success, isTrue);
+
+      await Future.delayed(Duration(seconds: 1));
+
+      pty.close();
+
+      expect(outputBuffer.toString(), contains('canonical'));
+    });
+
+    test('can spawn with cbreak mode', () async {
+      final pty = NativePty();
+      
+      final outputBuffer = StringBuffer();
+      pty.stream.listen((data) {
+        outputBuffer.write(data);
+      });
+
+      final success = pty.spawn(
+        '/bin/bash',
+        ['/bin/bash', '-c', 'echo "cbreak"'],
+        mode: TerminalMode.cbreak,
+      );
+      expect(success, isTrue);
+
+      await Future.delayed(Duration(seconds: 1));
+
+      pty.close();
+
+      expect(outputBuffer.toString(), contains('cbreak'));
+    });
+
+    test('can spawn with raw mode', () async {
+      final pty = NativePty();
+      
+      final outputBuffer = StringBuffer();
+      pty.stream.listen((data) {
+        outputBuffer.write(data);
+      });
+
+      final success = pty.spawn(
+        '/bin/cat',
+        ['/bin/cat'],
+        mode: TerminalMode.raw,
+      );
+      expect(success, isTrue);
+
+      await Future.delayed(Duration(milliseconds: 500));
+
+      // Write some data in raw mode
+      pty.write('raw mode test\n');
+
+      await Future.delayed(Duration(milliseconds: 500));
+
+      pty.close();
+
+      expect(outputBuffer.toString(), contains('raw mode test'));
+    });
+
+    test('can get terminal mode', () async {
+      final pty = NativePty();
+
+      final success = pty.spawn(
+        '/bin/bash',
+        ['/bin/bash'],
+        mode: TerminalMode.cbreak,
+      );
+      expect(success, isTrue);
+
+      await Future.delayed(Duration(milliseconds: 200));
+
+      final mode = pty.getMode();
+      expect(mode, equals(TerminalMode.cbreak));
+
+      pty.close();
+    });
+
+    test('can set terminal mode', () async {
+      final pty = NativePty();
+
+      final success = pty.spawn(
+        '/bin/bash',
+        ['/bin/bash'],
+        mode: TerminalMode.canonical,
+      );
+      expect(success, isTrue);
+
+      await Future.delayed(Duration(milliseconds: 200));
+
+      expect(pty.getMode(), equals(TerminalMode.canonical));
+
+      // Switch to raw mode
+      final result = pty.setMode(TerminalMode.raw);
+      expect(result, equals(0));
+      expect(pty.getMode(), equals(TerminalMode.raw));
+
+      // Switch to cbreak mode
+      pty.setMode(TerminalMode.cbreak);
+      expect(pty.getMode(), equals(TerminalMode.cbreak));
+
+      pty.close();
+    });
+
+    test('terminal mode defaults to canonical', () async {
+      final pty = NativePty();
+
+      // Spawn without specifying mode - should default to canonical
+      final success = pty.spawn(
+        '/bin/bash',
+        ['/bin/bash'],
+      );
+      expect(success, isTrue);
+
+      await Future.delayed(Duration(milliseconds: 200));
+
+      final mode = pty.getMode();
+      expect(mode, equals(TerminalMode.canonical));
+
+      pty.close();
+    });
+
+    test('TerminalMode fromValue works correctly', () {
+      expect(TerminalMode.fromValue(0), equals(TerminalMode.canonical));
+      expect(TerminalMode.fromValue(1), equals(TerminalMode.cbreak));
+      expect(TerminalMode.fromValue(2), equals(TerminalMode.raw));
+      
+      expect(() => TerminalMode.fromValue(3), throwsArgumentError);
+      expect(() => TerminalMode.fromValue(-1), throwsArgumentError);
+    });
   });
 }
 

@@ -4,6 +4,13 @@
 #include <stdint.h>
 #include <stddef.h>
 
+// Terminal mode enum
+enum PtyMode {
+    PTY_MODE_CANONICAL = 0,  // Line buffering, echoing, signal processing
+    PTY_MODE_CBREAK = 1,     // Character-at-a-time, echoing, signal processing
+    PTY_MODE_RAW = 2         // Raw mode, no processing
+};
+
 // Callback signature for data received from PTY
 typedef void (*PtyDataCallback)(uint8_t* data, int32_t length);
 
@@ -15,6 +22,7 @@ typedef struct {
     int master_fd;
     int pid;
     int running;
+    int mode;  // Current terminal mode
     PtyDataCallback callback;
     PtyExitCallback exit_callback;
     void* thread;
@@ -28,7 +36,8 @@ void pty_init();
 // Returns a pointer to PtyContext on success, NULL on failure
 // If envp is NULL, uses the current process environment
 // If cwd is NULL, uses the current working directory
-PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[], const char* cwd, PtyDataCallback callback, PtyExitCallback exit_callback);
+// mode specifies the terminal mode (canonical, cbreak, or raw)
+PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[], const char* cwd, int mode, PtyDataCallback callback, PtyExitCallback exit_callback);
 
 // Write data to the PTY
 int pty_write(PtyContext* ctx, const uint8_t* data, int length);
@@ -39,6 +48,14 @@ int pty_resize(PtyContext* ctx, int rows, int cols);
 // Send a signal to the PTY process
 // Returns 0 on success, -1 on error
 int pty_kill(PtyContext* ctx, int signal);
+
+// Set the terminal mode
+// Returns 0 on success, -1 on error
+int pty_set_mode(PtyContext* ctx, int mode);
+
+// Get the current terminal mode
+// Returns the mode value (0, 1, or 2) on success, -1 on error
+int pty_get_mode(PtyContext* ctx);
 
 // Close and cleanup the PTY
 void pty_close(PtyContext* ctx);

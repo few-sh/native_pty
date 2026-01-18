@@ -83,8 +83,45 @@ void pty_init() {
     // to get their exit codes
 }
 
+// Helper function to apply terminal mode settings
+static void apply_terminal_mode(struct termios* term_settings, int mode) {
+    switch (mode) {
+        case PTY_MODE_CANONICAL:
+            // Canonical mode: line buffering, echoing, signal processing
+            term_settings->c_lflag |= ICANON | ECHO | ECHOE | ECHOK | ECHOCTL | ECHOKE | ISIG | IEXTEN;
+            term_settings->c_iflag |= ICRNL | IXON;
+            term_settings->c_oflag |= OPOST | ONLCR;
+            break;
+            
+        case PTY_MODE_CBREAK:
+            // Cbreak mode: character-at-a-time, echoing, signal processing
+            term_settings->c_lflag &= ~ICANON;  // Disable canonical mode
+            term_settings->c_lflag |= ECHO | ECHOE | ECHOK | ECHOCTL | ECHOKE | ISIG | IEXTEN;
+            term_settings->c_iflag |= ICRNL | IXON;
+            term_settings->c_oflag |= OPOST | ONLCR;
+            term_settings->c_cc[VMIN] = 1;   // Read at least 1 character
+            term_settings->c_cc[VTIME] = 0;  // No timeout
+            break;
+            
+        case PTY_MODE_RAW:
+            // Raw mode: no processing, no echoing, no signals
+            // Disable canonical mode, echoing, and signal generation
+            term_settings->c_lflag &= ~(ICANON | ECHO | ECHOE | ECHOK | ECHOCTL | ECHOKE | ISIG | IEXTEN);
+            // Disable input processing
+            term_settings->c_iflag &= ~(ICRNL | IXON | IXOFF | INLCR | IGNCR | BRKINT | INPCK | ISTRIP);
+            // Disable output processing
+            term_settings->c_oflag &= ~(OPOST | ONLCR);
+            // Set character size to 8 bits
+            term_settings->c_cflag |= CS8;
+            term_settings->c_cflag &= ~PARENB;
+            term_settings->c_cc[VMIN] = 1;   // Read at least 1 character
+            term_settings->c_cc[VTIME] = 0;  // No timeout
+            break;
+    }
+}
+
 // Spawn a new process with PTY
-PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[], const char* cwd, PtyDataCallback callback, PtyExitCallback exit_callback) {
+PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[], const char* cwd, int mode, PtyDataCallback callback, PtyExitCallback exit_callback) {
     if (command == NULL || argv == NULL || callback == NULL) {
         return NULL;
     }
@@ -98,6 +135,7 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     ctx->callback = callback;
     ctx->exit_callback = exit_callback;
     ctx->running = 1;
+    ctx->mode = mode;  // Store the requested mode
     
     int slave_fd;
     struct termios term_settings;
@@ -111,9 +149,9 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     
     // Get default terminal settings
     if (tcgetattr(STDIN_FILENO, &term_settings) == 0) {
-        // Use current terminal settings if available
+        // Use current terminal settings as a base
     } else {
-        // Set sane defaults
+        // Set sane defaults as a base
         memset(&term_settings, 0, sizeof(term_settings));
         term_settings.c_iflag = ICRNL | IXON;
         term_settings.c_oflag = OPOST | ONLCR;
@@ -122,6 +160,9 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
         cfsetispeed(&term_settings, B38400);
         cfsetospeed(&term_settings, B38400);
     }
+    
+    // Apply the requested terminal mode
+    apply_terminal_mode(&term_settings, mode);
     
     // Create PTY pair
     if (openpty(&ctx->master_fd, &slave_fd, NULL, &term_settings, &win_size) != 0) {
@@ -238,6 +279,47 @@ int pty_kill(PtyContext* ctx, int signal) {
     }
     
     return -1;
+}
+
+// Set the terminal mode
+int pty_set_mode(PtyContext* ctx, int mode) {
+    if (ctx == NULL || ctx->master_fd < 0) {
+        return -1;
+    }
+    
+    // Validate mode
+    if (mode < PTY_MODE_CANONICAL || mode > PTY_MODE_RAW) {
+        return -1;
+    }
+    
+    struct termios term_settings;
+    
+    // Get current terminal settings
+    if (tcgetattr(ctx->master_fd, &term_settings) != 0) {
+        return -1;
+    }
+    
+    // Apply the requested terminal mode
+    apply_terminal_mode(&term_settings, mode);
+    
+    // Set the new terminal settings
+    if (tcsetattr(ctx->master_fd, TCSANOW, &term_settings) != 0) {
+        return -1;
+    }
+    
+    // Update the stored mode
+    ctx->mode = mode;
+    
+    return 0;
+}
+
+// Get the current terminal mode
+int pty_get_mode(PtyContext* ctx) {
+    if (ctx == NULL) {
+        return -1;
+    }
+    
+    return ctx->mode;
 }
 
 // Close and cleanup the PTY

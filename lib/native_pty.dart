@@ -4,6 +4,58 @@ import 'dart:io';
 import 'dart:convert';
 import 'package:ffi/ffi.dart';
 
+/// Terminal mode for PTY.
+///
+/// Controls how input and output are processed by the terminal.
+enum TerminalMode {
+  /// Default: Line buffering, character echoing, and signal processing.
+  ///
+  /// In this mode:
+  /// - Input is line-buffered (read after Enter is pressed)
+  /// - Characters are echoed to the terminal
+  /// - Special characters like Ctrl+C generate signals (SIGINT)
+  /// - Suitable for interactive shells and line-oriented programs
+  canonical(0),
+
+  /// No line buffering (immediate keys), but still handles signals like Ctrl+C.
+  ///
+  /// In this mode:
+  /// - Input is available immediately (character-at-a-time)
+  /// - Characters are echoed to the terminal
+  /// - Special characters like Ctrl+C still generate signals
+  /// - Suitable for programs that need immediate input but still want signal handling
+  cbreak(1),
+
+  /// Direct byte access: No echoing, no signals, no processing. Used by Vim/SSH.
+  ///
+  /// In this mode:
+  /// - Input is available immediately (character-at-a-time)
+  /// - No character echoing
+  /// - No signal generation (Ctrl+C is passed as raw byte)
+  /// - All special key processing is disabled
+  /// - Suitable for full-screen applications like vim, emacs, less, top
+  raw(2);
+
+  /// The numeric value of this terminal mode.
+  final int value;
+
+  const TerminalMode(this.value);
+
+  /// Creates a TerminalMode from its numeric value.
+  static TerminalMode fromValue(int value) {
+    switch (value) {
+      case 0:
+        return TerminalMode.canonical;
+      case 1:
+        return TerminalMode.cbreak;
+      case 2:
+        return TerminalMode.raw;
+      default:
+        throw ArgumentError('Invalid terminal mode value: $value');
+    }
+  }
+}
+
 // Native types
 final class PtyContext extends ffi.Opaque {}
 
@@ -26,6 +78,7 @@ typedef PtySpawnNative = ffi.Pointer<PtyContext> Function(
     ffi.Pointer<ffi.Pointer<Utf8>> argv,
     ffi.Pointer<ffi.Pointer<Utf8>> envp,
     ffi.Pointer<Utf8> cwd,
+    ffi.Int32 mode,
     ffi.Pointer<ffi.NativeFunction<PtyDataCallbackNative>> callback,
     ffi.Pointer<ffi.NativeFunction<PtyExitCallbackNative>> exitCallback);
 typedef PtySpawn = ffi.Pointer<PtyContext> Function(
@@ -33,6 +86,7 @@ typedef PtySpawn = ffi.Pointer<PtyContext> Function(
     ffi.Pointer<ffi.Pointer<Utf8>> argv,
     ffi.Pointer<ffi.Pointer<Utf8>> envp,
     ffi.Pointer<Utf8> cwd,
+    int mode,
     ffi.Pointer<ffi.NativeFunction<PtyDataCallbackNative>> callback,
     ffi.Pointer<ffi.NativeFunction<PtyExitCallbackNative>> exitCallback);
 
@@ -49,6 +103,13 @@ typedef PtyResize = int Function(
 typedef PtyKillNative = ffi.Int32 Function(
     ffi.Pointer<PtyContext> ctx, ffi.Int32 signal);
 typedef PtyKill = int Function(ffi.Pointer<PtyContext> ctx, int signal);
+
+typedef PtySetModeNative = ffi.Int32 Function(
+    ffi.Pointer<PtyContext> ctx, ffi.Int32 mode);
+typedef PtySetMode = int Function(ffi.Pointer<PtyContext> ctx, int mode);
+
+typedef PtyGetModeNative = ffi.Int32 Function(ffi.Pointer<PtyContext> ctx);
+typedef PtyGetMode = int Function(ffi.Pointer<PtyContext> ctx);
 
 typedef PtyCloseNative = ffi.Void Function(ffi.Pointer<PtyContext> ctx);
 typedef PtyClose = void Function(ffi.Pointer<PtyContext> ctx);
@@ -85,6 +146,8 @@ class NativePty {
   late final PtyWrite _ptyWrite;
   late final PtyResize _ptyResize;
   late final PtyKill _ptyKill;
+  late final PtySetMode _ptySetMode;
+  late final PtyGetMode _ptyGetMode;
   late final PtyClose _ptyClose;
   late final PtyFree _ptyFree;
 
@@ -107,6 +170,8 @@ class NativePty {
     _ptyWrite = _lib.lookupFunction<PtyWriteNative, PtyWrite>('pty_write');
     _ptyResize = _lib.lookupFunction<PtyResizeNative, PtyResize>('pty_resize');
     _ptyKill = _lib.lookupFunction<PtyKillNative, PtyKill>('pty_kill');
+    _ptySetMode = _lib.lookupFunction<PtySetModeNative, PtySetMode>('pty_set_mode');
+    _ptyGetMode = _lib.lookupFunction<PtyGetModeNative, PtyGetMode>('pty_get_mode');
     _ptyClose = _lib.lookupFunction<PtyCloseNative, PtyClose>('pty_close');
     _ptyFree = _lib.lookupFunction<PtyFreeNative, PtyFree>('pty_free');
 
@@ -160,9 +225,10 @@ class NativePty {
   /// If null, the current process environment is used.
   /// [workingDirectory] is an optional working directory for the process.
   /// If null, the current working directory is used.
+  /// [mode] is the terminal mode to use. Defaults to [TerminalMode.canonical].
   ///
   /// Returns true if the spawn was successful, false otherwise.
-  bool spawn(String command, List<String> args, {Map<String, String>? environment, String? workingDirectory}) {
+  bool spawn(String command, List<String> args, {Map<String, String>? environment, String? workingDirectory, TerminalMode mode = TerminalMode.canonical}) {
     if (_context != null) {
       throw StateError('PTY already spawned');
     }
@@ -201,7 +267,7 @@ class NativePty {
     }
 
     try {
-      _context = _ptySpawn(commandPtr, argvPtr, envpPtr, cwdPtr, _nativeCallback.nativeFunction, _nativeExitCallback.nativeFunction);
+      _context = _ptySpawn(commandPtr, argvPtr, envpPtr, cwdPtr, mode.value, _nativeCallback.nativeFunction, _nativeExitCallback.nativeFunction);
 
       if (_context == null || _context == ffi.nullptr) {
         return false;
@@ -290,6 +356,39 @@ class NativePty {
     // Default to SIGTERM if no signal specified
     final sig = signal ?? ProcessSignal.sigterm.signalNumber;
     return _ptyKill(_context!, sig);
+  }
+
+  /// Sets the terminal mode for the PTY.
+  ///
+  /// [mode] is the terminal mode to set.
+  ///
+  /// Terminal modes:
+  /// - [TerminalMode.canonical]: Line buffering, echoing, and signal processing (default)
+  /// - [TerminalMode.cbreak]: Character-at-a-time input with signal processing
+  /// - [TerminalMode.raw]: Raw mode with no processing (for vim, less, etc.)
+  ///
+  /// Returns 0 on success, -1 on error.
+  int setMode(TerminalMode mode) {
+    if (_context == null || _context == ffi.nullptr) {
+      throw StateError('PTY not spawned');
+    }
+
+    return _ptySetMode(_context!, mode.value);
+  }
+
+  /// Gets the current terminal mode of the PTY.
+  ///
+  /// Returns the current [TerminalMode], or throws an exception on error.
+  TerminalMode getMode() {
+    if (_context == null || _context == ffi.nullptr) {
+      throw StateError('PTY not spawned');
+    }
+
+    final modeValue = _ptyGetMode(_context!);
+    if (modeValue < 0) {
+      throw StateError('Failed to get terminal mode');
+    }
+    return TerminalMode.fromValue(modeValue);
   }
 
   /// Stream of data received from the PTY.
