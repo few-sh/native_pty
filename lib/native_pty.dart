@@ -5,7 +5,7 @@ import 'dart:convert';
 import 'package:ffi/ffi.dart';
 
 // Specify the asset ID that the hook/build.dart will produce
-@ffi.DefaultAsset('native_pty')
+@ffi.DefaultAsset('native_pty.dart')
 
 /// Terminal mode for PTY.
 ///
