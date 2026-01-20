@@ -49,6 +49,21 @@ static void* pty_read_loop(void* args) {
         }
     }
     
+    // Mark reading as finished and check if we need to fire exit callback
+    // This synchronization ensures exit callback is not fired until all data has been read
+    if (ctx->mutex != NULL) {
+        pthread_mutex_t* mutex = (pthread_mutex_t*)ctx->mutex;
+        pthread_mutex_lock(mutex);
+        ctx->read_finished = 1;
+        int should_fire_exit = ctx->has_exited;
+        int code = ctx->exit_code;
+        pthread_mutex_unlock(mutex);
+        
+        if (should_fire_exit && ctx->exit_callback != NULL) {
+             ctx->exit_callback(code);
+        }
+    }
+    
     return NULL;
 }
 
@@ -88,6 +103,8 @@ static void* pty_exit_monitor(void* args) {
                 } else {
                     exit_code = -1;
                 }
+                // Reap the zombie process confirmed by kqueue
+                waitpid(ctx->pid, NULL, WNOHANG);
             } else {
                 // Fallback: try to get status from waitpid
                 int status;
@@ -153,8 +170,21 @@ static void* pty_exit_monitor(void* args) {
     }
 #endif
     
-    // Notify Dart about process exit
-    if (ctx->exit_callback != NULL) {
+    // Notify Dart about process exit ONLY if reading is also finished.
+    // Otherwise, store state and let reader thread notify when it's done.
+    if (ctx->mutex != NULL) {
+        pthread_mutex_t* mutex = (pthread_mutex_t*)ctx->mutex;
+        pthread_mutex_lock(mutex);
+        ctx->has_exited = 1;
+        ctx->exit_code = exit_code;
+        int should_fire_exit = ctx->read_finished;
+        pthread_mutex_unlock(mutex);
+        
+        // If reader finished first, we fire the callback now
+        if (should_fire_exit && ctx->exit_callback != NULL) {
+            ctx->exit_callback(exit_code);
+        }
+    } else if (ctx->exit_callback != NULL) {
         ctx->exit_callback(exit_code);
     }
     
@@ -221,6 +251,12 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     ctx->running = 1;
     ctx->mode = mode;  // Store the requested mode
     
+    // Initialize synchronization primitives
+    ctx->mutex = malloc(sizeof(pthread_mutex_t));
+    if (ctx->mutex != NULL) {
+        pthread_mutex_init((pthread_mutex_t*)ctx->mutex, NULL);
+    }
+    
     int slave_fd;
     struct termios term_settings;
     struct winsize win_size;
@@ -250,6 +286,10 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     
     // Create PTY pair
     if (openpty(&ctx->master_fd, &slave_fd, NULL, &term_settings, &win_size) != 0) {
+        if (ctx->mutex != NULL) {
+            pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
+            free(ctx->mutex);
+        }
         free(ctx);
         return NULL;
     }
@@ -273,8 +313,8 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
         // Linux supports posix_spawn_file_actions_addchdir_np
         posix_spawn_file_actions_addchdir_np(&actions, cwd);
         #elif defined(__APPLE__)
-        // macOS also supports this function
-        posix_spawn_file_actions_addchdir_np(&actions, cwd);
+        // macOS supports standard posix_spawn_file_actions_addchdir
+        posix_spawn_file_actions_addchdir(&actions, cwd);
         #else
         // For other systems, we can't easily change directory with posix_spawn
         // This is a limitation, but we'll document it
@@ -297,6 +337,10 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     
     if (spawn_result != 0) {
         close(ctx->master_fd);
+        if (ctx->mutex != NULL) {
+            pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
+            free(ctx->mutex);
+        }
         free(ctx);
         return NULL;
     }
@@ -308,6 +352,10 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     if (pthread_create(&thread, NULL, pty_read_loop, ctx) != 0) {
         close(ctx->master_fd);
         kill(pid, SIGKILL);
+        if (ctx->mutex != NULL) {
+            pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
+            free(ctx->mutex);
+        }
         free(ctx);
         return NULL;
     }
@@ -442,6 +490,12 @@ void pty_close(PtyContext* ctx) {
     // This is important to avoid use-after-free
     if (ctx->exit_thread != NULL) {
         pthread_join((pthread_t)ctx->exit_thread, NULL);
+    }
+    
+    // Clean up synchronization primitives
+    if (ctx->mutex != NULL) {
+        pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
+        free(ctx->mutex);
     }
     
     free(ctx);

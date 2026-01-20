@@ -27,6 +27,12 @@ typedef struct {
     PtyExitCallback exit_callback;
     void* thread;
     void* exit_thread;
+    
+    // Synchronization
+    void* mutex;        // pthread_mutex_t*
+    int exit_code;
+    int has_exited;
+    int read_finished;
 } PtyContext;
 
 // Initialize the PTY system (sets up signal handlers)
