@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 
 // Specify the asset ID that the hook/build.dart will produce
@@ -303,14 +304,28 @@ class NativePty {
     }
 
     final bytes = utf8.encode(data);
-    final length = bytes.length;
+    return writeBytes(Uint8List.fromList(bytes));
+  }
+
+  /// Writes raw bytes to the PTY.
+  ///
+  /// [data] is the bytes to write to the PTY.
+  ///
+  /// Returns the number of bytes written.
+  /// Throws [PtyException] on error.
+  int writeBytes(Uint8List data) {
+    if (_closed) {
+      throw StateError('PTY is closed');
+    }
+
+    final length = data.length;
 
     // Allocate native memory for the data
     final dataPtr = calloc<ffi.Uint8>(length);
     try {
       // Efficiently copy bytes using asTypedList
       final nativeBytes = dataPtr.asTypedList(length);
-      nativeBytes.setAll(0, bytes);
+      nativeBytes.setAll(0, data);
 
       final result = _ptyWrite(_context, dataPtr, length);
       if (result < 0) {
