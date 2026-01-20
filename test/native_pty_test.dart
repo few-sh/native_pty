@@ -300,6 +300,29 @@ void main() {
       pty.close();
     });
 
+    test('avoids race condition where exitCode completes before data', () async {
+      // Run multiple times to ensure stability
+      for (int i = 0; i < 20; i++) {
+        final pty = NativePty.spawn('/bin/echo', [
+          '/bin/echo',
+          'race_check_$i',
+        ]);
+
+        final output = StringBuffer();
+        pty.stream.listen((data) {
+          output.write(data);
+        });
+
+        // Await exit code - this should only complete AFTER data has been fully read
+        await pty.exitCode;
+
+        // Verify we captured the output
+        expect(output.toString(), contains('race_check_$i'));
+
+        pty.close();
+      }
+    });
+
     test('throws StateError when killing closed PTY', () async {
       final pty = NativePty.spawn('/bin/echo', ['/bin/echo', 'test']);
 
