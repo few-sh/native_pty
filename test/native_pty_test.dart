@@ -89,8 +89,11 @@ void main() {
 
     test('handles high-output without memory issues', () async {
       // Spawn a command that produces a lot of output
-      final pty = NativePty.spawn('/bin/bash',
-          ['/bin/bash', '-c', 'yes "Hello World" | head -n 10000']);
+      final pty = NativePty.spawn('/bin/bash', [
+        '/bin/bash',
+        '-c',
+        'yes "Hello World" | head -n 10000',
+      ]);
 
       var totalBytes = 0;
       var chunkCount = 0;
@@ -114,8 +117,11 @@ void main() {
       final outputBuffer = StringBuffer();
 
       // Test with multi-byte UTF-8 characters
-      final pty = NativePty.spawn(
-          '/bin/bash', ['/bin/bash', '-c', 'echo "Hello 世界 🌍 测试 🚀"']);
+      final pty = NativePty.spawn('/bin/bash', [
+        '/bin/bash',
+        '-c',
+        'echo "Hello 世界 🌍 测试 🚀"',
+      ]);
 
       pty.stream.listen((data) {
         outputBuffer.write(data);
@@ -166,15 +172,11 @@ void main() {
         'PATH': Platform.environment['PATH'] ?? '/usr/bin:/bin',
       };
 
-      final pty = NativePty.spawn(
+      final pty = NativePty.spawn('/bin/bash', [
         '/bin/bash',
-        [
-          '/bin/bash',
-          '-c',
-          r'echo "TEST_VAR_1=$TEST_VAR_1" && echo "TEST_VAR_2=$TEST_VAR_2"'
-        ],
-        environment: customEnv,
-      );
+        '-c',
+        r'echo "TEST_VAR_1=$TEST_VAR_1" && echo "TEST_VAR_2=$TEST_VAR_2"',
+      ], environment: customEnv);
 
       pty.stream.listen((data) {
         outputBuffer.write(data);
@@ -230,8 +232,11 @@ void main() {
     });
 
     test('can send SIGTERM signal', () async {
-      final pty =
-          NativePty.spawn('/bin/bash', ['/bin/bash', '-c', 'sleep 100']);
+      final pty = NativePty.spawn('/bin/bash', [
+        '/bin/bash',
+        '-c',
+        'sleep 100',
+      ]);
 
       pty.stream.listen((data) {
         // Consume output
@@ -250,8 +255,11 @@ void main() {
     });
 
     test('can send SIGKILL signal', () async {
-      final pty =
-          NativePty.spawn('/bin/bash', ['/bin/bash', '-c', 'sleep 100']);
+      final pty = NativePty.spawn('/bin/bash', [
+        '/bin/bash',
+        '-c',
+        'sleep 100',
+      ]);
 
       pty.stream.listen((data) {
         // Consume output
@@ -270,8 +278,11 @@ void main() {
     });
 
     test('kill uses default SIGTERM when no signal specified', () async {
-      final pty =
-          NativePty.spawn('/bin/bash', ['/bin/bash', '-c', 'sleep 100']);
+      final pty = NativePty.spawn('/bin/bash', [
+        '/bin/bash',
+        '-c',
+        'sleep 100',
+      ]);
 
       pty.stream.listen((data) {
         // Consume output
@@ -302,11 +313,11 @@ void main() {
       final outputBuffer = StringBuffer();
 
       // Spawn bash with custom working directory
-      final pty = NativePty.spawn(
+      final pty = NativePty.spawn('/bin/bash', [
         '/bin/bash',
-        ['/bin/bash', '-c', 'pwd'],
-        workingDirectory: '/tmp',
-      );
+        '-c',
+        'pwd',
+      ], workingDirectory: '/tmp');
 
       pty.stream.listen((data) {
         outputBuffer.write(data);
@@ -327,10 +338,7 @@ void main() {
       final currentDir = Directory.current.path;
 
       // Spawn bash without custom working directory
-      final pty = NativePty.spawn(
-        '/bin/bash',
-        ['/bin/bash', '-c', 'pwd'],
-      );
+      final pty = NativePty.spawn('/bin/bash', ['/bin/bash', '-c', 'pwd']);
 
       pty.stream.listen((data) {
         outputBuffer.write(data);
@@ -351,15 +359,11 @@ void main() {
           'native_pty_test_${DateTime.now().millisecondsSinceEpoch}.txt';
 
       // Spawn bash with custom working directory and create a file
-      final pty = NativePty.spawn(
+      final pty = NativePty.spawn('/bin/bash', [
         '/bin/bash',
-        [
-          '/bin/bash',
-          '-c',
-          'echo "test" > $testFile && pwd && ls $testFile && rm $testFile'
-        ],
-        workingDirectory: '/tmp',
-      );
+        '-c',
+        'echo "test" > $testFile && pwd && ls $testFile && rm $testFile',
+      ], workingDirectory: '/tmp');
 
       pty.stream.listen((data) {
         outputBuffer.write(data);
@@ -377,11 +381,11 @@ void main() {
     test('can spawn with canonical mode (default)', () async {
       final outputBuffer = StringBuffer();
 
-      final pty = NativePty.spawn(
+      final pty = NativePty.spawn('/bin/bash', [
         '/bin/bash',
-        ['/bin/bash', '-c', 'echo "canonical"'],
-        mode: TerminalMode.canonical,
-      );
+        '-c',
+        'echo "canonical"',
+      ], mode: TerminalMode.canonical);
 
       pty.stream.listen((data) {
         outputBuffer.write(data);
@@ -397,11 +401,11 @@ void main() {
     test('can spawn with cbreak mode', () async {
       final outputBuffer = StringBuffer();
 
-      final pty = NativePty.spawn(
+      final pty = NativePty.spawn('/bin/bash', [
         '/bin/bash',
-        ['/bin/bash', '-c', 'echo "cbreak"'],
-        mode: TerminalMode.cbreak,
-      );
+        '-c',
+        'echo "cbreak"',
+      ], mode: TerminalMode.cbreak);
 
       pty.stream.listen((data) {
         outputBuffer.write(data);
@@ -417,11 +421,9 @@ void main() {
     test('can spawn with raw mode', () async {
       final outputBuffer = StringBuffer();
 
-      final pty = NativePty.spawn(
+      final pty = NativePty.spawn('/bin/cat', [
         '/bin/cat',
-        ['/bin/cat'],
-        mode: TerminalMode.raw,
-      );
+      ], mode: TerminalMode.raw);
 
       pty.stream.listen((data) {
         outputBuffer.write(data);
@@ -440,11 +442,9 @@ void main() {
     });
 
     test('can get terminal mode', () async {
-      final pty = NativePty.spawn(
+      final pty = NativePty.spawn('/bin/bash', [
         '/bin/bash',
-        ['/bin/bash'],
-        mode: TerminalMode.cbreak,
-      );
+      ], mode: TerminalMode.cbreak);
 
       await Future.delayed(Duration(milliseconds: 200));
 
@@ -455,11 +455,9 @@ void main() {
     });
 
     test('can set terminal mode', () async {
-      final pty = NativePty.spawn(
+      final pty = NativePty.spawn('/bin/bash', [
         '/bin/bash',
-        ['/bin/bash'],
-        mode: TerminalMode.canonical,
-      );
+      ], mode: TerminalMode.canonical);
 
       await Future.delayed(Duration(milliseconds: 200));
 
@@ -478,10 +476,7 @@ void main() {
 
     test('terminal mode defaults to canonical', () async {
       // Spawn without specifying mode - should default to canonical
-      final pty = NativePty.spawn(
-        '/bin/bash',
-        ['/bin/bash'],
-      );
+      final pty = NativePty.spawn('/bin/bash', ['/bin/bash']);
 
       await Future.delayed(Duration(milliseconds: 200));
 
@@ -498,6 +493,38 @@ void main() {
 
       expect(() => TerminalMode.fromValue(3), throwsArgumentError);
       expect(() => TerminalMode.fromValue(-1), throwsArgumentError);
+    });
+
+    test('supports raw data output when autoDecodeUtf8 is false', () async {
+      final pty = NativePty.spawn('/bin/bash', [
+        '/bin/bash',
+        '-c',
+        'echo "hello"',
+      ], autoDecodeUtf8: false);
+
+      final rawDataOptions = <int>[];
+      final utf8DataOptions = <String>[];
+
+      // Listen to both streams.
+      // In autoDecodeUtf8: false mode, only the raw data stream should receive events.
+      pty.data.listen((data) {
+        rawDataOptions.addAll(data);
+      });
+
+      pty.stream.listen((data) {
+        utf8DataOptions.add(data);
+      });
+
+      await pty.exitCode;
+
+      pty.close();
+
+      // Check raw data
+      final rawString = String.fromCharCodes(rawDataOptions);
+      expect(rawString, contains('hello'));
+
+      // Check utf8 data is empty
+      expect(utf8DataOptions, isEmpty);
     });
   });
 }
