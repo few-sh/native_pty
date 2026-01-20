@@ -7,7 +7,6 @@ import 'package:ffi/ffi.dart';
 
 // Specify the asset ID that the hook/build.dart will produce
 @ffi.DefaultAsset('native_pty.dart')
-
 /// Terminal mode for PTY.
 ///
 /// Controls how input and output are processed by the terminal.
@@ -64,10 +63,10 @@ enum TerminalMode {
 final class PtyContext extends ffi.Opaque {}
 
 // Callback signature for data received from PTY
-typedef PtyDataCallbackNative = ffi.Void Function(
-    ffi.Pointer<ffi.Uint8> data, ffi.Int32 length);
-typedef PtyDataCallback = void Function(
-    ffi.Pointer<ffi.Uint8> data, int length);
+typedef PtyDataCallbackNative =
+    ffi.Void Function(ffi.Pointer<ffi.Uint8> data, ffi.Int32 length);
+typedef PtyDataCallback =
+    void Function(ffi.Pointer<ffi.Uint8> data, int length);
 
 // Callback signature for process exit notification
 typedef PtyExitCallbackNative = ffi.Void Function(ffi.Int32 exitCode);
@@ -80,44 +79,51 @@ typedef PtyExitCallback = void Function(int exitCode);
 external void _ptyInit();
 
 @ffi.Native<
-    ffi.Pointer<PtyContext> Function(
-        ffi.Pointer<Utf8>,
-        ffi.Pointer<ffi.Pointer<Utf8>>,
-        ffi.Pointer<ffi.Pointer<Utf8>>,
-        ffi.Pointer<Utf8>,
-        ffi.Int32,
-        ffi.Pointer<ffi.NativeFunction<PtyDataCallbackNative>>,
-        ffi.Pointer<ffi.NativeFunction<PtyExitCallbackNative>>)>(
-    symbol: 'pty_spawn')
+  ffi.Pointer<PtyContext> Function(
+    ffi.Pointer<Utf8>,
+    ffi.Pointer<ffi.Pointer<Utf8>>,
+    ffi.Pointer<ffi.Pointer<Utf8>>,
+    ffi.Pointer<Utf8>,
+    ffi.Int32,
+    ffi.Pointer<ffi.NativeFunction<PtyDataCallbackNative>>,
+    ffi.Pointer<ffi.NativeFunction<PtyExitCallbackNative>>,
+  )
+>(symbol: 'pty_spawn')
 external ffi.Pointer<PtyContext> _ptySpawn(
-    ffi.Pointer<Utf8> command,
-    ffi.Pointer<ffi.Pointer<Utf8>> argv,
-    ffi.Pointer<ffi.Pointer<Utf8>> envp,
-    ffi.Pointer<Utf8> cwd,
-    int mode,
-    ffi.Pointer<ffi.NativeFunction<PtyDataCallbackNative>> callback,
-    ffi.Pointer<ffi.NativeFunction<PtyExitCallbackNative>> exitCallback);
+  ffi.Pointer<Utf8> command,
+  ffi.Pointer<ffi.Pointer<Utf8>> argv,
+  ffi.Pointer<ffi.Pointer<Utf8>> envp,
+  ffi.Pointer<Utf8> cwd,
+  int mode,
+  ffi.Pointer<ffi.NativeFunction<PtyDataCallbackNative>> callback,
+  ffi.Pointer<ffi.NativeFunction<PtyExitCallbackNative>> exitCallback,
+);
 
 @ffi.Native<
-    ffi.Int32 Function(ffi.Pointer<PtyContext>, ffi.Pointer<ffi.Uint8>,
-        ffi.Int32)>(symbol: 'pty_write')
+  ffi.Int32 Function(ffi.Pointer<PtyContext>, ffi.Pointer<ffi.Uint8>, ffi.Int32)
+>(symbol: 'pty_write')
 external int _ptyWrite(
-    ffi.Pointer<PtyContext> ctx, ffi.Pointer<ffi.Uint8> data, int length);
+  ffi.Pointer<PtyContext> ctx,
+  ffi.Pointer<ffi.Uint8> data,
+  int length,
+);
 
 @ffi.Native<ffi.Int32 Function(ffi.Pointer<PtyContext>, ffi.Int32, ffi.Int32)>(
-    symbol: 'pty_resize')
+  symbol: 'pty_resize',
+)
 external int _ptyResize(ffi.Pointer<PtyContext> ctx, int rows, int cols);
 
 @ffi.Native<ffi.Int32 Function(ffi.Pointer<PtyContext>, ffi.Int32)>(
-    symbol: 'pty_kill')
+  symbol: 'pty_kill',
+)
 external int _ptyKill(ffi.Pointer<PtyContext> ctx, int signal);
 
 @ffi.Native<ffi.Int32 Function(ffi.Pointer<PtyContext>, ffi.Int32)>(
-    symbol: 'pty_set_mode')
+  symbol: 'pty_set_mode',
+)
 external int _ptySetMode(ffi.Pointer<PtyContext> ctx, int mode);
 
-@ffi.Native<ffi.Int32 Function(ffi.Pointer<PtyContext>)>(
-    symbol: 'pty_get_mode')
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<PtyContext>)>(symbol: 'pty_get_mode')
 external int _ptyGetMode(ffi.Pointer<PtyContext> ctx);
 
 @ffi.Native<ffi.Void Function(ffi.Pointer<PtyContext>)>(symbol: 'pty_close')
@@ -149,6 +155,8 @@ class NativePty {
   late final ffi.NativeCallable<PtyDataCallbackNative> _nativeCallback;
   late final ffi.NativeCallable<PtyExitCallbackNative> _nativeExitCallback;
   final StreamController<String> _controller = StreamController<String>();
+  final StreamController<Uint8List> _dataController =
+      StreamController<Uint8List>();
   late final ByteConversionSink _utf8Sink;
   final Completer<int> _exitCodeCompleter = Completer<int>();
   bool _closed = false;
@@ -163,18 +171,18 @@ class NativePty {
 
     // Set up chunked UTF-8 decoder that maintains state between chunks
     // This handles multi-byte UTF-8 characters split across buffer boundaries
-    final decoder = const Utf8Decoder(allowMalformed: false);
-    _utf8Sink = decoder.startChunkedConversion(
-      _StreamStringSink(_controller),
-    );
+    final decoder = const Utf8Decoder(allowMalformed: true);
+    _utf8Sink = decoder.startChunkedConversion(_StreamStringSink(_controller));
 
     // Set up the native callback
-    _nativeCallback =
-        ffi.NativeCallable<PtyDataCallbackNative>.listener(_onData);
+    _nativeCallback = ffi.NativeCallable<PtyDataCallbackNative>.listener(
+      _onData,
+    );
 
     // Set up the exit callback
-    _nativeExitCallback =
-        ffi.NativeCallable<PtyExitCallbackNative>.listener(_onExit);
+    _nativeExitCallback = ffi.NativeCallable<PtyExitCallbackNative>.listener(
+      _onExit,
+    );
   }
 
   /// Callback for data received from the PTY.
@@ -185,6 +193,7 @@ class NativePty {
       // Use chunked UTF-8 decoder to handle multi-byte characters split across buffers
       // The decoder maintains state and will buffer incomplete sequences
       if (!_closed) {
+        _dataController.add(Uint8List.fromList(bytes));
         _utf8Sink.add(bytes);
       }
     } finally {
@@ -211,10 +220,13 @@ class NativePty {
   /// [mode] is the terminal mode to use. Defaults to [TerminalMode.canonical].
   ///
   /// Throws [PtyException] if the spawn fails.
-  static NativePty spawn(String command, List<String> args,
-      {Map<String, String>? environment,
-      String? workingDirectory,
-      TerminalMode mode = TerminalMode.canonical}) {
+  static NativePty spawn(
+    String command,
+    List<String> args, {
+    Map<String, String>? environment,
+    String? workingDirectory,
+    TerminalMode mode = TerminalMode.canonical,
+  }) {
     final pty = NativePty._();
     pty._init();
 
@@ -234,8 +246,9 @@ class NativePty {
 
     if (environment != null) {
       // Convert map to KEY=VALUE strings
-      envStrings =
-          environment.entries.map((e) => '${e.key}=${e.value}').toList();
+      envStrings = environment.entries
+          .map((e) => '${e.key}=${e.value}')
+          .toList();
 
       envpPtr = calloc<ffi.Pointer<Utf8>>(envStrings.length + 1);
       for (var i = 0; i < envStrings.length; i++) {
@@ -252,13 +265,14 @@ class NativePty {
 
     try {
       final context = _ptySpawn(
-          commandPtr,
-          argvPtr,
-          envpPtr,
-          cwdPtr,
-          mode.value,
-          pty._nativeCallback.nativeFunction,
-          pty._nativeExitCallback.nativeFunction);
+        commandPtr,
+        argvPtr,
+        envpPtr,
+        cwdPtr,
+        mode.value,
+        pty._nativeCallback.nativeFunction,
+        pty._nativeExitCallback.nativeFunction,
+      );
 
       if (context == ffi.nullptr) {
         pty._nativeCallback.close();
@@ -420,6 +434,9 @@ class NativePty {
   /// Data is provided as UTF-8 decoded strings.
   Stream<String> get stream => _controller.stream;
 
+  /// Stream of raw data received from the PTY.
+  Stream<Uint8List> get data => _dataController.stream;
+
   /// Future that completes with the exit code when the process terminates.
   ///
   /// The exit code is:
@@ -443,6 +460,7 @@ class NativePty {
     // Close the UTF-8 sink to flush any pending bytes
     _utf8Sink.close();
     _controller.close();
+    _dataController.close();
     _nativeCallback.close();
     _nativeExitCallback.close();
   }
