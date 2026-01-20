@@ -160,9 +160,10 @@ class NativePty {
   late final ByteConversionSink _utf8Sink;
   final Completer<int> _exitCodeCompleter = Completer<int>();
   bool _closed = false;
+  final bool _autoDecodeUtf8;
 
   /// Private constructor. Use [NativePty.spawn] to create instances.
-  NativePty._();
+  NativePty._(this._autoDecodeUtf8);
 
   /// Initializes the callbacks and UTF-8 decoder.
   void _init() {
@@ -193,8 +194,11 @@ class NativePty {
       // Use chunked UTF-8 decoder to handle multi-byte characters split across buffers
       // The decoder maintains state and will buffer incomplete sequences
       if (!_closed) {
-        _dataController.add(Uint8List.fromList(bytes));
-        _utf8Sink.add(bytes);
+        if (_autoDecodeUtf8) {
+          _utf8Sink.add(bytes);
+        } else {
+          _dataController.add(Uint8List.fromList(bytes));
+        }
       }
     } finally {
       // CRITICAL: Free the C memory now that Dart has copied it
@@ -218,6 +222,10 @@ class NativePty {
   /// [workingDirectory] is an optional working directory for the process.
   /// If null, the current working directory is used.
   /// [mode] is the terminal mode to use. Defaults to [TerminalMode.canonical].
+  /// [autoDecodeUtf8] specifies whether to decode output as UTF-8.
+  /// If true (default), data is decoded and sent to the [stream]. The raw [data] stream will receive no events.
+  /// If false, raw bytes are sent to the [data] stream. The UTF-8 [stream] will receive no events.
+  /// Both streams are buffered (non-broadcast), ensuring no data loss for late subscribers.
   ///
   /// Throws [PtyException] if the spawn fails.
   static NativePty spawn(
@@ -226,8 +234,9 @@ class NativePty {
     Map<String, String>? environment,
     String? workingDirectory,
     TerminalMode mode = TerminalMode.canonical,
+    bool autoDecodeUtf8 = true,
   }) {
-    final pty = NativePty._();
+    final pty = NativePty._(autoDecodeUtf8);
     pty._init();
 
     // Allocate memory for command
