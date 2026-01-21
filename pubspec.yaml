@@ -4,7 +4,7 @@ version: 0.1.0
 # repository: https://github.com/few-sh/native_pty
 
 environment:
-  sdk: '>=3.10.4 <4.0.0'
+  sdk: '>=3.10.3 <4.0.0'
 
 # Add regular dependencies here.
 dependencies:

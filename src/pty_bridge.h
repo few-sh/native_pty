@@ -33,6 +33,7 @@ typedef struct {
     int exit_code;
     int has_exited;
     int read_finished;
+    int exit_fd;        // Pipe file descriptor to read exit code (Linux Double-Fork)
 } PtyContext;
 
 // Initialize the PTY system (sets up signal handlers)

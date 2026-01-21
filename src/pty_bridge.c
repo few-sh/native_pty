@@ -148,24 +148,19 @@ static void* pty_exit_monitor(void* args) {
         }
     }
 #else
-    // On Linux, use standard waitpid
-    int status;
-    pid_t result;
-    int saved_errno;
-    do {
-        result = waitpid(ctx->pid, &status, 0);
-        saved_errno = errno;
-    } while (result == -1 && saved_errno == EINTR);
-    
-    if (result > 0) {
-        if (WIFEXITED(status)) {
-            exit_code = WEXITSTATUS(status);
-        } else if (WIFSIGNALED(status)) {
-            exit_code = 128 + WTERMSIG(status);
+    // On Linux, use the exit_fd pipe from the Monitor process
+    if (ctx->exit_fd != -1) {
+        int code = -1;
+        ssize_t n = read(ctx->exit_fd, &code, sizeof(int));
+        if (n == sizeof(int)) {
+            exit_code = code;
         } else {
             exit_code = -1;
         }
+        close(ctx->exit_fd);
+        ctx->exit_fd = -1;
     } else {
+        // Fallback or legacy (should not happen with new spawn)
         exit_code = -1;
     }
 #endif
@@ -298,7 +293,136 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     int flags = fcntl(ctx->master_fd, F_GETFL, 0);
     fcntl(ctx->master_fd, F_SETFL, flags | O_NONBLOCK);
     
-    // Prepare posix_spawn attributes
+#ifdef __linux__
+    // Linux Double-Fork Implementation to avoid Dart VM reaping children
+    int exit_pipe[2];
+    if (pipe(exit_pipe) != 0) {
+        close(ctx->master_fd);
+        close(slave_fd);
+        if (ctx->mutex != NULL) { pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex); free(ctx->mutex); }
+        free(ctx);
+        return NULL;
+    }
+    
+    int error_pipe[2];
+    if (pipe(error_pipe) != 0) {
+        close(exit_pipe[0]); close(exit_pipe[1]);
+        close(ctx->master_fd);
+        close(slave_fd);
+        if (ctx->mutex != NULL) { pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex); free(ctx->mutex); }
+        free(ctx);
+        return NULL;
+    }
+    fcntl(error_pipe[1], F_SETFD, FD_CLOEXEC);
+
+    pid_t monitor_pid = fork();
+    if (monitor_pid < 0) {
+        close(error_pipe[0]); close(error_pipe[1]);
+        close(exit_pipe[0]); close(exit_pipe[1]);
+        close(ctx->master_fd);
+        close(slave_fd);
+        if (ctx->mutex != NULL) { pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex); free(ctx->mutex); }
+        free(ctx);
+        return NULL;
+    }
+
+    if (monitor_pid == 0) {
+        // Monitor Process
+        close(exit_pipe[0]); // Close read end
+        close(error_pipe[0]); // Close error read end
+        close(ctx->master_fd);
+
+        pid_t shell_pid = fork();
+        if (shell_pid == 0) {
+            // Shell Process
+            close(exit_pipe[1]);
+            
+            // Setup session and controlling terminal
+            setsid();
+            if (ioctl(slave_fd, TIOCSCTTY, NULL) == -1) {}
+            
+            dup2(slave_fd, STDIN_FILENO);
+            dup2(slave_fd, STDOUT_FILENO);
+            dup2(slave_fd, STDERR_FILENO);
+            if (slave_fd > STDERR_FILENO) close(slave_fd);
+
+            if (cwd != NULL) chdir(cwd);
+            
+            // We need to set environ manually if we use execvp and want to replace it? 
+            // Actually execvp uses current 'environ'. 
+            // But we should set it if envp is provided.
+            if (envp != NULL) environ = (char**)envp;
+            
+            execvp(command, argv);
+            
+            // If execvp fails, write errno to error pipe and exit
+            int err = errno;
+            write(error_pipe[1], &err, sizeof(int));
+            _exit(1);
+        }
+        
+        // Back in Monitor
+        close(slave_fd);
+        close(error_pipe[1]); // Close write end so Parent gets EOF if exec succeeds
+        
+        if (shell_pid < 0) {
+             pid_t fail_pid = -1;
+             write(exit_pipe[1], &fail_pid, sizeof(pid_t));
+             _exit(1);
+        }
+
+        // Send Shell PID
+        write(exit_pipe[1], &shell_pid, sizeof(pid_t));
+
+        // Wait for shell
+        int status;
+        while (waitpid(shell_pid, &status, 0) == -1 && errno == EINTR);
+
+        int exit_code = -1;
+        if (WIFEXITED(status)) {
+            exit_code = WEXITSTATUS(status);
+        } else if (WIFSIGNALED(status)) {
+            exit_code = 128 + WTERMSIG(status);
+        }
+        
+        write(exit_pipe[1], &exit_code, sizeof(int));
+        _exit(0);
+    }
+
+    // Parent (Dart)
+    close(slave_fd);
+    close(exit_pipe[1]); // Close write end
+    close(error_pipe[1]); // Close write end of error pipe
+    
+    // Check for exec error
+    int exec_err = 0;
+    ssize_t err_read = read(error_pipe[0], &exec_err, sizeof(int));
+    close(error_pipe[0]);
+    
+    if (err_read > 0) {
+        // Exec failed
+        close(exit_pipe[0]);
+        close(ctx->master_fd);
+        if (ctx->mutex != NULL) { pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex); free(ctx->mutex); }
+        free(ctx);
+        errno = exec_err;
+        return NULL;
+    }
+    
+    pid_t shell_pid = -1;
+    if (read(exit_pipe[0], &shell_pid, sizeof(pid_t)) != sizeof(pid_t) || shell_pid < 0) {
+        close(exit_pipe[0]);
+        close(ctx->master_fd);
+        if (ctx->mutex != NULL) { pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex); free(ctx->mutex); }
+        free(ctx);
+        return NULL;
+    }
+    
+    ctx->pid = shell_pid;
+    ctx->exit_fd = exit_pipe[0];
+
+#else
+    // Original posix_spawn Implementation for macOS/Other
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);
     posix_spawn_file_actions_adddup2(&actions, slave_fd, STDIN_FILENO);
@@ -307,27 +431,17 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     posix_spawn_file_actions_addclose(&actions, slave_fd);
     posix_spawn_file_actions_addclose(&actions, ctx->master_fd);
     
-    // Set working directory if specified
     if (cwd != NULL) {
-        #ifdef __linux__
-        // Linux supports posix_spawn_file_actions_addchdir_np
-        posix_spawn_file_actions_addchdir_np(&actions, cwd);
-        #elif defined(__APPLE__)
-        // macOS supports standard posix_spawn_file_actions_addchdir
+        #if defined(__APPLE__)
         posix_spawn_file_actions_addchdir(&actions, cwd);
-        #else
-        // For other systems, we can't easily change directory with posix_spawn
-        // This is a limitation, but we'll document it
         #endif
     }
     
     posix_spawnattr_t attr;
     posix_spawnattr_init(&attr);
-    // Create a new session - this is critical for PTY
     posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID);
     
     pid_t pid;
-    // Use provided environment or fall back to current process environment
     char* const* env_to_use = (envp != NULL) ? envp : environ;
     int spawn_result = posix_spawn(&pid, command, &actions, &attr, argv, env_to_use);
     
@@ -346,12 +460,14 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     }
     
     ctx->pid = pid;
+    ctx->exit_fd = -1;
+#endif
     
     // Start the reader thread
     pthread_t thread;
     if (pthread_create(&thread, NULL, pty_read_loop, ctx) != 0) {
         close(ctx->master_fd);
-        kill(pid, SIGKILL);
+        if (ctx->pid > 0) kill(ctx->pid, SIGKILL);
         if (ctx->mutex != NULL) {
             pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
             free(ctx->mutex);
