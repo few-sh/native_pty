@@ -313,6 +313,36 @@ void main() {
       pty.close();
     });
 
+    test('correctly suspends a process with SIGTSTP (Ctrl-Z)', () async {
+      final pty = NativePty.spawn('/bin/bash', ['/bin/bash', '-i']);
+
+      // Sleep in foreground
+      pty.write('sleep 100\n');
+
+      final outputBuffer = StringBuffer();
+      pty.stream.listen((data) {
+        outputBuffer.write(data);
+      });
+
+      // Wait for sleep to start
+      await Future.delayed(Duration(seconds: 1));
+
+      // Send SIGTSTP
+      pty.kill(ProcessSignal.sigtstp.signalNumber);
+
+      // Wait a bit
+      await Future.delayed(Duration(milliseconds: 500));
+
+      // Verify sleep was stopped (bash usually says "Stopped")
+      expect(outputBuffer.toString(), contains('Stopped'));
+
+      // Clean up (kill the stopped job to avoid zombies/hanging shells)
+      pty.write('kill %1\n');
+      await Future.delayed(Duration(milliseconds: 100));
+
+      pty.close();
+    });
+
     test('can send SIGTERM signal', () async {
       final pty = NativePty.spawn('/bin/bash', [
         '/bin/bash',

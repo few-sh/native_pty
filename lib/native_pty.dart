@@ -410,6 +410,9 @@ class NativePty {
         } else if (sig == ProcessSignal.sigquit.signalNumber) {
           write('\x1c'); // Send Ctrl-\ (SIGQUIT)
           return;
+        } else if (sig == ProcessSignal.sigtstp.signalNumber) {
+          write('\x1a'); // Send Ctrl-Z (SIGTSTP)
+          return;
         }
       }
     } catch (e) {
