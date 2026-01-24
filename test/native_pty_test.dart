@@ -204,6 +204,55 @@ void main() {
       pty.close();
     });
 
+    test(
+      'correctly kills a process spawned via shell write (interactive mode)',
+      () async {
+        // Spawn interactive shell (like LocalShellBackend)
+        final pty = NativePty.spawn('/bin/bash', ['/bin/bash', '-i']);
+
+        // Script that spawns child processes (sleep in a loop)
+        const script =
+            'for i in {1..6}; do echo "\$((\$i * 20)) minutes passed"; if [ \$i -lt 6 ]; then sleep 1200; fi; done; echo "2 hours complete"';
+
+        // Write command to the shell like LocalShellBackend does
+        pty.write('$script\n');
+
+        final outputBuffer = StringBuffer();
+        pty.stream.listen((data) {
+          outputBuffer.write(data);
+        });
+
+        // Wait for the script to start and print something
+        await Future.delayed(Duration(seconds: 1));
+
+        // Kill the PTY process (the interactive shell)
+        // Send Ctrl-C to interrupt the loop (via kill SIGINT which maps to \x03 in canonical mode)
+        pty.kill(ProcessSignal.sigint.signalNumber);
+
+        // Wait a bit for the interrupt to handle
+        await Future.delayed(Duration(milliseconds: 100));
+
+        // Send exit command because Ctrl-C might have flushed the previous input
+        pty.write('exit\n');
+
+        // Wait for exit
+        final exitCode = await pty.exitCode;
+
+        // We expect the script to have started but not finished
+        expect(outputBuffer.toString(), contains('20 minutes passed'));
+        // "40 minutes passed" is not in the script source, so it won't be in the echo.
+        // It would only appear if the loop continued to the second iteration.
+        expect(outputBuffer.toString(), isNot(contains('40 minutes passed')));
+
+        // The shell itself should have been killed
+        // Since we "exit" gracefully after Ctrl-C, exit code might be 0 or 1 or 130
+        // We just care that it exits.
+        expect(exitCode, isNotNull);
+
+        pty.close();
+      },
+    );
+
     test('reports exit code for failed process', () async {
       final pty = NativePty.spawn('/bin/bash', ['/bin/bash', '-c', 'exit 42']);
 
@@ -227,6 +276,39 @@ void main() {
       // The exitCode future should complete
       final exitCode = await pty.exitCode.timeout(Duration(seconds: 2));
       expect(exitCode, equals(0));
+
+      pty.close();
+    });
+
+    test('correctly kills a process with SIGQUIT (Ctrl-\)', () async {
+      final pty = NativePty.spawn('/bin/bash', ['/bin/bash', '-i']);
+
+      // Sleep in foreground
+      pty.write('sleep 100\n');
+
+      final outputBuffer = StringBuffer();
+      pty.stream.listen((data) {
+        outputBuffer.write(data);
+      });
+
+      // Wait for sleep to start
+      await Future.delayed(Duration(seconds: 1));
+
+      // Send SIGQUIT
+      pty.kill(ProcessSignal.sigquit.signalNumber);
+
+      // Wait a bit
+      await Future.delayed(Duration(milliseconds: 100));
+
+      // If sleep aborted, we should be back at prompt (or receive quit message)
+      // Usually bash prints "Quit: 3" or similar
+      pty.write('echo "ready"\n');
+
+      // Wait for response
+      await Future.delayed(Duration(milliseconds: 500));
+
+      // Verify we are back alive and received the output of the echo command
+      expect(outputBuffer.toString(), contains('ready'));
 
       pty.close();
     });

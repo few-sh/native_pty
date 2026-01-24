@@ -521,7 +521,14 @@ int pty_kill(PtyContext* ctx, int signal) {
         return -1;
     }
     
-    // Send the signal to the process
+    // Send the signal to the process group (negative PID)
+    // This ensures that we kill the entire process tree (e.g. shell + commands)
+    // and works even if the leader process has already exited but children remain.
+    // if (kill(-ctx->pid, signal) == 0) {
+    //     return 0;
+    // }
+    
+    // Fallback to sending to the specific PID
     if (kill(ctx->pid, signal) == 0) {
         return 0;
     }

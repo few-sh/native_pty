@@ -395,6 +395,27 @@ class NativePty {
 
     // Default to SIGTERM if no signal specified
     final sig = signal ?? ProcessSignal.sigterm.signalNumber;
+
+    // Check if we should translate signals to terminal control characters
+    // This provides better handling for interactive shells which might not
+    // respond correctly to signals sent via kill() when running in a PTY.
+    try {
+      final mode = getMode();
+      // In Canonical or CBreak modes, terminal parses control chars as signals
+      // In Raw mode, they are passed through as data
+      if (mode != TerminalMode.raw) {
+        if (sig == ProcessSignal.sigint.signalNumber) {
+          write('\x03'); // Send Ctrl-C (SIGINT)
+          return;
+        } else if (sig == ProcessSignal.sigquit.signalNumber) {
+          write('\x1c'); // Send Ctrl-\ (SIGQUIT)
+          return;
+        }
+      }
+    } catch (e) {
+      // Ignore error getting mode, fall back to kill()
+    }
+
     final result = _ptyKill(_context, sig);
     if (result < 0) {
       throw PtyException('Failed to send signal $sig to PTY process');
