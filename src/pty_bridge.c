@@ -612,9 +612,19 @@ void pty_close(PtyContext* ctx) {
         close(ctx->master_fd);
     }
     
-    // Wait for reader thread to finish
+    // Check if we're being called from the reader thread itself
+    // If so, we can't join it (would deadlock), so detach instead
+    pthread_t current_thread = pthread_self();
+    pthread_t reader_thread = (pthread_t)ctx->thread;
+    
     if (ctx->thread != NULL) {
-        pthread_join((pthread_t)ctx->thread, NULL);
+        if (pthread_equal(current_thread, reader_thread)) {
+            // Called from within reader thread - detach and let it exit naturally
+            pthread_detach(reader_thread);
+        } else {
+            // Called from different thread - safe to join
+            pthread_join(reader_thread, NULL);
+        }
     }
     
     // Kill the child process if still running
@@ -631,10 +641,16 @@ void pty_close(PtyContext* ctx) {
         }
     }
     
-    // Wait for exit monitoring thread to finish
-    // This is important to avoid use-after-free
+    // Check for exit thread as well
+    pthread_t exit_thread = (pthread_t)ctx->exit_thread;
     if (ctx->exit_thread != NULL) {
-        pthread_join((pthread_t)ctx->exit_thread, NULL);
+        if (pthread_equal(current_thread, exit_thread)) {
+            // Called from within exit thread - detach
+            pthread_detach(exit_thread);
+        } else {
+            // Safe to join
+            pthread_join(exit_thread, NULL);
+        }
     }
     
     // Clean up synchronization primitives
