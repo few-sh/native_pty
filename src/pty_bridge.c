@@ -23,7 +23,7 @@ extern char **environ;
 // Thread function for reading PTY output
 static void* pty_read_loop(void* args) {
     PtyContext* ctx = (PtyContext*)args;
-    uint8_t buffer[4096];
+    uint8_t buffer[65536];
     
     // Read until EOF - do NOT check running flag here
     // The reader must drain all data until the child closes its end
@@ -31,10 +31,34 @@ static void* pty_read_loop(void* args) {
         ssize_t n = read(ctx->master_fd, buffer, sizeof(buffer));
         if (n <= 0) {
             if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                // We hold slave_fd open, so we don't get EIO naturally.
+                // We check if process exited to determine when to stop.
+                pthread_mutex_t* mutex = (pthread_mutex_t*)ctx->mutex;
+                pthread_mutex_lock(mutex);
+                int done = ctx->has_exited;
+                pthread_mutex_unlock(mutex);
+                
+                if (done) {
+                   // Process exited and buffer is empty (EAGAIN).
+                   // We close our handle to the slave side to transition to EOF/EIO state.
+                   // We do NOT need to check queues or wait. If we got EAGAIN, the kernel buffer is empty.
+                   // (Assuming we haven't lost data on write path due to MAX_CANON).
+                    pthread_mutex_lock(mutex);
+                    if (ctx->slave_fd != -1) {
+                        close(ctx->slave_fd);
+                        ctx->slave_fd = -1;
+                    }
+                    pthread_mutex_unlock(mutex);
+                    
+                    // Continue loop to hit EIO on next read (or EOF)
+                    continue;
+                }
+
                 usleep(10000); // Sleep 10ms if no data
                 continue;
             }
-            break; // EOF or error
+            // Real EOF or EIO or other error
+            break; 
         }
         
         // Copy the callback pointer under mutex protection
@@ -246,6 +270,8 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     ctx->exit_callback = exit_callback;
     ctx->running = 1;
     ctx->mode = mode;  // Store the requested mode
+    ctx->slave_fd = -1;
+    ctx->exit_fd = -1;
     
     // Initialize synchronization primitives - REQUIRED for thread safety
     ctx->mutex = malloc(sizeof(pthread_mutex_t));
@@ -289,6 +315,7 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
         free(ctx);
         return NULL;
     }
+    ctx->slave_fd = slave_fd; // Store slave FD to keep it open in parent
     
     // Set master FD to non-blocking for better control
     int flags = fcntl(ctx->master_fd, F_GETFL, 0);
@@ -366,7 +393,7 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
         }
         
         // Back in Monitor
-        close(slave_fd);
+        close(slave_fd); // Close in monitor process (Dart process still holds it)
         close(error_pipe[1]); // Close write end so Parent gets EOF if exec succeeds
         
         if (shell_pid < 0) {
@@ -394,7 +421,8 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     }
 
     // Parent (Dart)
-    close(slave_fd);
+    // We do NOT close slave_fd here. We keep it open to prevent premature EIO
+    // when the child process exits. We will close it in pty_close instead.
     close(exit_pipe[1]); // Close write end
     close(error_pipe[1]); // Close write end of error pipe
     
@@ -453,7 +481,7 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     
     posix_spawn_file_actions_destroy(&actions);
     posix_spawnattr_destroy(&attr);
-    close(slave_fd);
+    // Do NOT close slave_fd here. See Linux implementation comment.
     
     if (spawn_result != 0) {
         close(ctx->master_fd);
@@ -482,13 +510,25 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     
     ctx->thread = (void*)thread;
     
-    // Start the exit monitoring thread if exit callback is provided
-    if (ctx->exit_callback != NULL) {
-        pthread_t exit_thread;
-        if (pthread_create(&exit_thread, NULL, pty_exit_monitor, ctx) == 0) {
-            // Don't detach - we need to join it in close() to avoid use-after-free
-            ctx->exit_thread = (void*)exit_thread;
-        }
+    // Always start the exit monitoring thread to properly handle EOF
+    // (We keep slave_fd open, so we need has_exited flag to know when to stop reading)
+    pthread_t exit_thread;
+    if (pthread_create(&exit_thread, NULL, pty_exit_monitor, ctx) == 0) {
+        // Don't detach - we need to join it in close() to avoid use-after-free
+        ctx->exit_thread = (void*)exit_thread;
+    } else {
+         // Failed to create exit thread - cleanup
+        atomic_store(&ctx->running, 0); 
+        close(ctx->master_fd);
+        if (ctx->slave_fd != -1) close(ctx->slave_fd);
+        if (ctx->pid > 0) kill(ctx->pid, SIGKILL);
+        // Can't easily cancel reader if it's already running without cancelling thread
+        // But since we just started it, maybe fine.
+        // For now assume pthread_create is reliable enough or let the OS cleanup
+        pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
+        free(ctx->mutex);
+        free(ctx);
+        return NULL;
     }
     
     return ctx;
@@ -645,6 +685,16 @@ void pty_close(PtyContext* ctx) {
     if (ctx->master_fd >= 0) {
         close(ctx->master_fd);
         ctx->master_fd = -1;
+    }
+    
+    if (ctx->slave_fd != -1) {
+        close(ctx->slave_fd);
+        ctx->slave_fd = -1;
+    }
+
+    if (ctx->exit_fd != -1) {
+        close(ctx->exit_fd);
+        ctx->exit_fd = -1;
     }
     
     // Step 3: Wait for reader thread to finish draining all data

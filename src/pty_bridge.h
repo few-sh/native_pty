@@ -35,6 +35,7 @@ typedef struct {
     int has_exited;
     int read_finished;
     int exit_fd;        // Pipe file descriptor to read exit code (Linux Double-Fork)
+    int slave_fd;       // Slave FD kept open in parent to prevent premature EIO
 } PtyContext;
 
 // Initialize the PTY system (sets up signal handlers)
