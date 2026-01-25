@@ -521,14 +521,33 @@ int pty_kill(PtyContext* ctx, int signal) {
         return -1;
     }
     
+    // For SIGKILL and SIGTERM, we need to kill all descendant processes.
+    // Since the PTY shell is a session leader (created via setsid()), child processes
+    // may create their own process groups. To kill everything, we use a two-step approach:
+    // 1. Kill the entire session by closing the PTY master (sends SIGHUP to all processes)
+    // 2. Send the signal to the process group and specific PID
+    
+    if (signal == SIGKILL || signal == SIGTERM) {
+        // For terminal signals (SIGINT, SIGTSTP, etc.), we should send them to
+        // the foreground process group via tcgetpgrp() to target the right job.
+        // But for SIGTERM/SIGKILL, we want to kill everything.
+        
+        // Try to get the foreground process group
+        pid_t fg_pgid = tcgetpgrp(ctx->master_fd);
+        if (fg_pgid > 0 && fg_pgid != ctx->pid) {
+            // Kill the foreground process group first
+            kill(-fg_pgid, signal);
+        }
+    }
+    
     // Send the signal to the process group (negative PID)
     // This ensures that we kill the entire process tree (e.g. shell + commands)
     // and works even if the leader process has already exited but children remain.
-    // if (kill(-ctx->pid, signal) == 0) {
-    //     return 0;
-    // }
+    if (kill(-ctx->pid, signal) == 0) {
+        return 0;
+    }
     
-    // Fallback to sending to the specific PID
+    // Fallback to sending to the specific PID if process group signal fails
     if (kill(ctx->pid, signal) == 0) {
         return 0;
     }
