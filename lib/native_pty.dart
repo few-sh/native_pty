@@ -209,6 +209,8 @@ class NativePty {
   /// Callback for process exit notification.
   void _onExit(int exitCode) {
     if (!_exitCodeCompleter.isCompleted) {
+      // Mark as closed since process has exited - operations should fail now
+      _closed = true;
       _exitCodeCompleter.complete(exitCode);
     }
   }
