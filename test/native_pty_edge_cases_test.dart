@@ -125,6 +125,7 @@ void main() {
     });
 
     test('handles very large single write', () async {
+      // Use short lines to avoid hitting MAX_CANON input buffer limit.
       final pty = NativePty.spawn('/bin/cat', ['/bin/cat']);
 
       final outputBuffer = StringBuffer();
@@ -139,9 +140,12 @@ void main() {
         },
       );
 
-      // Create a very large write (larger than typical PTY buffer)
-      final largeData = 'X' * 100000; // 100KB
-      final bytesWritten = pty.write('$largeData\n');
+      // Create a very large write but with newlines every 80 chars
+      // 'X' * 80 + '\n' = 81 chars.
+      // 100000 / 81 = 1234 lines.
+      final line = 'X' * 80 + '\n';
+      final largeData = line * 1235; // ~100KB
+      final bytesWritten = pty.write(largeData);
 
       // Should write all data now that we handle partial writes
       expect(bytesWritten, greaterThan(100000));
@@ -156,10 +160,8 @@ void main() {
       // Wait for stream to close (all data delivered)
       await completer.future;
 
-      // PTYs can lose data when the process exits while data is in flight
-      // This is expected behavior - accept >40% as reasonable
-      // (the important thing is we don't crash or deadlock)
-      expect(outputBuffer.length, greaterThan(40000));
+      // We should get ALL data back now that we avoid canonical limit and premature closing
+      expect(outputBuffer.length, greaterThan(100000));
     });
 
     test('handles very large write with bundled EOF', () async {
@@ -178,11 +180,12 @@ void main() {
       );
 
       // Create a very large write
-      final largeData = 'X' * 100000; // 100KB
+      // Use lines to avoid MAX_CANON truncation
+      final line = 'X' * 80 + '\n';
+      final largeData = line * 1235; // ~100KB
 
-      // Write data and EOF in one call - they'll be sent together
-      // This ensures EOF comes after all the data in the stream
-      final bytesWritten = pty.write('$largeData\n\x04');
+      // Write data and EOF in one call
+      final bytesWritten = pty.write('$largeData\x04');
 
       // Should write all data including EOF byte
       expect(bytesWritten, greaterThan(100000));
@@ -194,9 +197,8 @@ void main() {
       // Wait for stream to close (all data delivered)
       await completer.future;
 
-      // Bundling EOF with data improves reliability but still not 100%
-      // PTY buffering is asynchronous, accept >40% as reasonable
-      expect(outputBuffer.length, greaterThan(40000));
+      // We should see ALL data now.
+      expect(outputBuffer.length, greaterThan(100000));
     });
 
     test('handles very large output with echo in raw mode', () async {
