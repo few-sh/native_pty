@@ -212,6 +212,12 @@ class NativePty {
       // Mark as closed since process has exited - operations should fail now
       _closed = true;
       _exitCodeCompleter.complete(exitCode);
+
+      // Close the streams to signal that no more data will come
+      // This must be done after the reader thread finishes (which calls this callback)
+      _utf8Sink.close();
+      _controller.close();
+      _dataController.close();
     }
   }
 

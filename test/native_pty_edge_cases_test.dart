@@ -128,26 +128,38 @@ void main() {
       final pty = NativePty.spawn('/bin/cat', ['/bin/cat']);
 
       final outputBuffer = StringBuffer();
-      pty.stream.listen((data) {
-        outputBuffer.write(data);
-      });
+      final completer = Completer<void>();
 
-      await Future.delayed(Duration(milliseconds: 200));
+      pty.stream.listen(
+        (data) {
+          outputBuffer.write(data);
+        },
+        onDone: () {
+          completer.complete();
+        },
+      );
 
       // Create a very large write (larger than typical PTY buffer)
       final largeData = 'X' * 100000; // 100KB
       final bytesWritten = pty.write('$largeData\n');
 
-      // Should either write all or return partial write count
-      expect(bytesWritten, greaterThan(0));
+      // Should write all data now that we handle partial writes
+      expect(bytesWritten, greaterThan(100000));
 
-      await Future.delayed(Duration(seconds: 2));
+      // Close stdin to signal EOF to cat, which will cause it to exit
+      pty.write('\x04'); // EOF (Ctrl+D)
 
-      pty.close();
+      // Wait for the process to exit naturally
+      final exitCode = await pty.exitCode;
+      expect(exitCode, equals(0));
 
-      // We should receive at least some of the data
-      // (may not get all due to buffering/timing)
-      expect(outputBuffer.length, greaterThan(1000));
+      // Wait for stream to close (all data delivered)
+      await completer.future;
+
+      // PTYs can lose data when the process exits while data is in flight
+      // This is expected behavior - accept >40% as reasonable
+      // (the important thing is we don't crash or deadlock)
+      expect(outputBuffer.length, greaterThan(40000));
     });
 
     test('handles closing PTY with unread buffered data', () async {

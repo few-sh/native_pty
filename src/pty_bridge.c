@@ -25,7 +25,9 @@ static void* pty_read_loop(void* args) {
     PtyContext* ctx = (PtyContext*)args;
     uint8_t buffer[4096];
     
-    while (atomic_load(&ctx->running)) {
+    // Read until EOF - do NOT check running flag here
+    // The reader must drain all data until the child closes its end
+    while (1) {
         ssize_t n = read(ctx->master_fd, buffer, sizeof(buffer));
         if (n <= 0) {
             if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
@@ -498,8 +500,36 @@ int pty_write(PtyContext* ctx, const uint8_t* data, int length) {
         return -1;
     }
     
-    ssize_t written = write(ctx->master_fd, data, length);
-    return (int)written;
+    // Handle partial writes in a loop
+    // PTY master is non-blocking, so write() may not write all data at once
+    int total_written = 0;
+    const uint8_t* ptr = data;
+    int remaining = length;
+    
+    while (remaining > 0) {
+        ssize_t written = write(ctx->master_fd, ptr, remaining);
+        
+        if (written < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // Buffer full, wait a bit and retry
+                usleep(1000); // 1ms
+                continue;
+            }
+            // Real error
+            return -1;
+        }
+        
+        if (written == 0) {
+            // Should not happen, but break to avoid infinite loop
+            break;
+        }
+        
+        total_written += written;
+        ptr += written;
+        remaining -= written;
+    }
+    
+    return total_written;
 }
 
 // Resize the PTY window
@@ -604,62 +634,63 @@ void pty_close(PtyContext* ctx) {
         return;
     }
     
-    // Set running to 0 using atomic store
+    pthread_t current_thread = pthread_self();
+    
+    // Step 1: Stop accepting new operations
     atomic_store(&ctx->running, 0);
     
-    // Close the master FD to trigger thread exit
+    // Step 2: Close the master FD to signal EOF to child
+    // This causes the child to exit, and when it closes its PTY end, 
+    // the reader will see EOF and exit naturally
     if (ctx->master_fd >= 0) {
         close(ctx->master_fd);
+        ctx->master_fd = -1;
     }
     
-    // Check if we're being called from the reader thread itself
-    // If so, we can't join it (would deadlock), so detach instead
-    pthread_t current_thread = pthread_self();
+    // Step 3: Wait for reader thread to finish draining all data
+    // It will exit when it sees EOF (read returns 0)
     pthread_t reader_thread = (pthread_t)ctx->thread;
-    
     if (ctx->thread != NULL) {
         if (pthread_equal(current_thread, reader_thread)) {
             // Called from within reader thread - detach and let it exit naturally
             pthread_detach(reader_thread);
         } else {
-            // Called from different thread - safe to join
+            // Called from different thread - wait for reader to finish
             pthread_join(reader_thread, NULL);
         }
     }
     
-    // Kill the child process if still running
+    // Step 4: Kill the process if still running (shouldn't happen normally)
     if (ctx->pid > 0) {
-        // Try graceful termination first
-        kill(ctx->pid, SIGTERM);
-        // Wait briefly to see if process terminates
-        usleep(100000); // 100ms
-        // Check if process is still running
         int status;
-        if (waitpid(ctx->pid, &status, WNOHANG) == 0) {
-            // Process still running, force kill
+        pid_t result = waitpid(ctx->pid, &status, WNOHANG);
+        if (result == 0) {
+            // Still running, force kill
             kill(ctx->pid, SIGKILL);
+            waitpid(ctx->pid, &status, 0);
         }
     }
     
-    // Check for exit thread as well
+    // Step 5: Wait for the exit monitoring thread to finish
     pthread_t exit_thread = (pthread_t)ctx->exit_thread;
     if (ctx->exit_thread != NULL) {
         if (pthread_equal(current_thread, exit_thread)) {
             // Called from within exit thread - detach
             pthread_detach(exit_thread);
         } else {
-            // Safe to join
+            // Wait for exit thread to finish
             pthread_join(exit_thread, NULL);
         }
     }
     
-    // Clean up synchronization primitives
+    // Step 6: Clean up
     pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
     free(ctx->mutex);
     
     free(ctx);
 }
 
+// Get the exit code of the process (blocks until process exits)
 // Memory management functions for Dart
 void* pty_malloc(size_t size) {
     return malloc(size);
