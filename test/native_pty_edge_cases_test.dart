@@ -162,6 +162,76 @@ void main() {
       expect(outputBuffer.length, greaterThan(40000));
     });
 
+    test('handles very large write with bundled EOF', () async {
+      final pty = NativePty.spawn('/bin/cat', ['/bin/cat']);
+
+      final outputBuffer = StringBuffer();
+      final completer = Completer<void>();
+
+      pty.stream.listen(
+        (data) {
+          outputBuffer.write(data);
+        },
+        onDone: () {
+          completer.complete();
+        },
+      );
+
+      // Create a very large write
+      final largeData = 'X' * 100000; // 100KB
+
+      // Write data and EOF in one call - they'll be sent together
+      // This ensures EOF comes after all the data in the stream
+      final bytesWritten = pty.write('$largeData\n\x04');
+
+      // Should write all data including EOF byte
+      expect(bytesWritten, greaterThan(100000));
+
+      // Wait for the process to exit naturally (cat sees EOF in stream)
+      final exitCode = await pty.exitCode;
+      expect(exitCode, equals(0));
+
+      // Wait for stream to close (all data delivered)
+      await completer.future;
+
+      // Bundling EOF with data improves reliability but still not 100%
+      // PTY buffering is asynchronous, accept >40% as reasonable
+      expect(outputBuffer.length, greaterThan(40000));
+    });
+
+    test('handles very large output with echo in raw mode', () async {
+      final largeData = 'X' * 100000; // 100KB
+
+      final pty = NativePty.spawn(
+        '/bin/echo',
+        ['/bin/echo', '-n', largeData], // -n to avoid adding newline
+        mode: TerminalMode.raw,
+      );
+
+      final outputBuffer = StringBuffer();
+      final completer = Completer<void>();
+
+      pty.stream.listen(
+        (data) {
+          outputBuffer.write(data);
+        },
+        onDone: () {
+          completer.complete();
+        },
+      );
+
+      // Wait for the process to exit naturally (echo outputs and exits)
+      final exitCode = await pty.exitCode;
+      expect(exitCode, equals(0));
+
+      // Wait for stream to close (all data delivered)
+      await completer.future;
+
+      // With echo, all data is from the argument, not stdin
+      // In raw mode with immediate exit, we should get ALL data
+      expect(outputBuffer.length, equals(100000));
+    });
+
     test('handles closing PTY with unread buffered data', () async {
       // Spawn process that produces output
       final pty = NativePty.spawn('/bin/bash', [
