@@ -389,6 +389,101 @@ void main() {
       pty.close();
     });
 
+    test(
+      'kills signal-ignoring process and all descendant processes',
+      () async {
+        // Get the absolute path to the test script
+        final scriptPath =
+            '${Directory.current.path}/test/scripts/signal_ignoring_process.sh';
+
+        // Verify the script exists
+        if (!File(scriptPath).existsSync()) {
+          fail('Test script not found at: $scriptPath');
+        }
+
+        // Spawn the signal-ignoring process via bash
+        final pty = NativePty.spawn('/bin/bash', ['/bin/bash', scriptPath]);
+
+        final outputBuffer = StringBuffer();
+        pty.stream.listen((data) {
+          outputBuffer.write(data);
+        });
+
+        // Wait for process to start and print a few iterations
+        await Future.delayed(Duration(milliseconds: 800));
+
+        // Verify the process is running
+        expect(
+          outputBuffer.toString(),
+          contains('Signal-ignoring process started'),
+        );
+        expect(outputBuffer.toString(), contains('Iteration'));
+
+        // Try to kill with SIGINT - process should ignore it
+        pty.kill(ProcessSignal.sigint.signalNumber);
+        await Future.delayed(Duration(milliseconds: 100));
+
+        // Process should still be running and ignoring the signal
+        expect(
+          outputBuffer.toString(),
+          contains('Received SIGINT, ignoring it'),
+        );
+
+        // Try SIGTERM - process should also ignore it
+        pty.kill(ProcessSignal.sigterm.signalNumber);
+        await Future.delayed(Duration(milliseconds: 100));
+
+        expect(
+          outputBuffer.toString(),
+          contains('Received SIGTERM, ignoring it'),
+        );
+
+        // Finally send SIGKILL which cannot be ignored
+        pty.kill(ProcessSignal.sigkill.signalNumber);
+
+        // Wait for process to be killed
+        final exitCode = await pty.exitCode.timeout(Duration(seconds: 5));
+
+        // Process killed by SIGKILL should have exit code 128 + 9 = 137
+        expect(exitCode, equals(137));
+
+        pty.close();
+
+        // Verify no orphaned processes remain
+        // Check for any remaining bash processes running our script
+        final checkResult = await Process.run('ps', ['aux']);
+
+        final output = checkResult.stdout.toString();
+        final scriptProcesses = output
+            .split('\n')
+            .where((line) => line.contains('signal_ignoring_process.sh'))
+            .where((line) => !line.contains('grep'))
+            .toList();
+
+        expect(
+          scriptProcesses.isEmpty,
+          isTrue,
+          reason:
+              'No signal_ignoring_process.sh processes should be running after SIGKILL, found: ${scriptProcesses.length}',
+        );
+
+        // Also check for orphaned sleep processes that might have been spawned by the script
+        final sleepProcesses = output
+            .split('\n')
+            .where((line) => line.contains('sleep 0.5'))
+            .where((line) => !line.contains('grep'))
+            .toList();
+
+        expect(
+          sleepProcesses.isEmpty,
+          isTrue,
+          reason:
+              'No orphaned sleep processes should remain after SIGKILL, found: ${sleepProcesses.length}',
+        );
+      },
+      timeout: const Timeout(Duration(seconds: 15)),
+    );
+
     test('kill uses default SIGTERM when no signal specified', () async {
       final pty = NativePty.spawn('/bin/bash', [
         '/bin/bash',
