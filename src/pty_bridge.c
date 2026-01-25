@@ -35,33 +35,36 @@ static void* pty_read_loop(void* args) {
             break; // EOF or error
         }
         
-        // Allocate memory for Dart to consume
-        uint8_t* out = (uint8_t*)malloc(n);
-        if (out != NULL) {
-            memcpy(out, buffer, n);
-            // Asynchronously notify Dart
-            if (ctx->callback != NULL) {
-                ctx->callback(out, n);
-            } else {
-                // Free memory if callback is not available
-                free(out);
+        // Copy the callback pointer and running state under mutex protection
+        // This prevents calling the callback after it's been closed
+        pthread_mutex_t* mutex = (pthread_mutex_t*)ctx->mutex;
+        pthread_mutex_lock(mutex);
+        int is_running = ctx->running;
+        PtyDataCallback callback = ctx->callback;
+        pthread_mutex_unlock(mutex);
+        
+        // Now perform the allocation and callback invocation outside the critical section
+        if (is_running && callback != NULL) {
+            uint8_t* out = (uint8_t*)malloc(n);
+            if (out != NULL) {
+                memcpy(out, buffer, n);
+                callback(out, n);
             }
         }
     }
     
     // Mark reading as finished and check if we need to fire exit callback
     // This synchronization ensures exit callback is not fired until all data has been read
-    if (ctx->mutex != NULL) {
-        pthread_mutex_t* mutex = (pthread_mutex_t*)ctx->mutex;
-        pthread_mutex_lock(mutex);
-        ctx->read_finished = 1;
-        int should_fire_exit = ctx->has_exited;
-        int code = ctx->exit_code;
-        pthread_mutex_unlock(mutex);
-        
-        if (should_fire_exit && ctx->exit_callback != NULL) {
-             ctx->exit_callback(code);
-        }
+    pthread_mutex_t* mutex = (pthread_mutex_t*)ctx->mutex;
+    pthread_mutex_lock(mutex);
+    ctx->read_finished = 1;
+    int should_fire_exit = ctx->has_exited;
+    int code = ctx->exit_code;
+    PtyExitCallback exit_callback = ctx->exit_callback;
+    pthread_mutex_unlock(mutex);
+    
+    if (should_fire_exit && exit_callback != NULL) {
+        exit_callback(code);
     }
     
     return NULL;
@@ -167,19 +170,15 @@ static void* pty_exit_monitor(void* args) {
     
     // Notify Dart about process exit ONLY if reading is also finished.
     // Otherwise, store state and let reader thread notify when it's done.
-    if (ctx->mutex != NULL) {
-        pthread_mutex_t* mutex = (pthread_mutex_t*)ctx->mutex;
-        pthread_mutex_lock(mutex);
-        ctx->has_exited = 1;
-        ctx->exit_code = exit_code;
-        int should_fire_exit = ctx->read_finished;
-        pthread_mutex_unlock(mutex);
-        
-        // If reader finished first, we fire the callback now
-        if (should_fire_exit && ctx->exit_callback != NULL) {
-            ctx->exit_callback(exit_code);
-        }
-    } else if (ctx->exit_callback != NULL) {
+    pthread_mutex_t* mutex = (pthread_mutex_t*)ctx->mutex;
+    pthread_mutex_lock(mutex);
+    ctx->has_exited = 1;
+    ctx->exit_code = exit_code;
+    int should_fire_exit = ctx->read_finished;
+    pthread_mutex_unlock(mutex);
+    
+    // If reader finished first, we fire the callback now
+    if (should_fire_exit && ctx->exit_callback != NULL) {
         ctx->exit_callback(exit_code);
     }
     
@@ -246,11 +245,13 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     ctx->running = 1;
     ctx->mode = mode;  // Store the requested mode
     
-    // Initialize synchronization primitives
+    // Initialize synchronization primitives - REQUIRED for thread safety
     ctx->mutex = malloc(sizeof(pthread_mutex_t));
-    if (ctx->mutex != NULL) {
-        pthread_mutex_init((pthread_mutex_t*)ctx->mutex, NULL);
+    if (ctx->mutex == NULL) {
+        free(ctx);
+        return NULL;
     }
+    pthread_mutex_init((pthread_mutex_t*)ctx->mutex, NULL);
     
     int slave_fd;
     struct termios term_settings;
@@ -281,10 +282,8 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     
     // Create PTY pair
     if (openpty(&ctx->master_fd, &slave_fd, NULL, &term_settings, &win_size) != 0) {
-        if (ctx->mutex != NULL) {
-            pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
-            free(ctx->mutex);
-        }
+        pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
+        free(ctx->mutex);
         free(ctx);
         return NULL;
     }
@@ -299,7 +298,8 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     if (pipe(exit_pipe) != 0) {
         close(ctx->master_fd);
         close(slave_fd);
-        if (ctx->mutex != NULL) { pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex); free(ctx->mutex); }
+        pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
+        free(ctx->mutex);
         free(ctx);
         return NULL;
     }
@@ -309,7 +309,8 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
         close(exit_pipe[0]); close(exit_pipe[1]);
         close(ctx->master_fd);
         close(slave_fd);
-        if (ctx->mutex != NULL) { pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex); free(ctx->mutex); }
+        pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
+        free(ctx->mutex);
         free(ctx);
         return NULL;
     }
@@ -321,7 +322,8 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
         close(exit_pipe[0]); close(exit_pipe[1]);
         close(ctx->master_fd);
         close(slave_fd);
-        if (ctx->mutex != NULL) { pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex); free(ctx->mutex); }
+        pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
+        free(ctx->mutex);
         free(ctx);
         return NULL;
     }
@@ -403,7 +405,8 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
         // Exec failed
         close(exit_pipe[0]);
         close(ctx->master_fd);
-        if (ctx->mutex != NULL) { pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex); free(ctx->mutex); }
+        pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
+        free(ctx->mutex);
         free(ctx);
         errno = exec_err;
         return NULL;
@@ -413,7 +416,8 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     if (read(exit_pipe[0], &shell_pid, sizeof(pid_t)) != sizeof(pid_t) || shell_pid < 0) {
         close(exit_pipe[0]);
         close(ctx->master_fd);
-        if (ctx->mutex != NULL) { pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex); free(ctx->mutex); }
+        pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
+        free(ctx->mutex);
         free(ctx);
         return NULL;
     }
@@ -468,10 +472,8 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     if (pthread_create(&thread, NULL, pty_read_loop, ctx) != 0) {
         close(ctx->master_fd);
         if (ctx->pid > 0) kill(ctx->pid, SIGKILL);
-        if (ctx->mutex != NULL) {
-            pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
-            free(ctx->mutex);
-        }
+        pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
+        free(ctx->mutex);
         free(ctx);
         return NULL;
     }
@@ -635,10 +637,8 @@ void pty_close(PtyContext* ctx) {
     }
     
     // Clean up synchronization primitives
-    if (ctx->mutex != NULL) {
-        pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
-        free(ctx->mutex);
-    }
+    pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
+    free(ctx->mutex);
     
     free(ctx);
 }
