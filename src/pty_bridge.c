@@ -25,7 +25,7 @@ static void* pty_read_loop(void* args) {
     PtyContext* ctx = (PtyContext*)args;
     uint8_t buffer[4096];
     
-    while (ctx->running) {
+    while (atomic_load(&ctx->running)) {
         ssize_t n = read(ctx->master_fd, buffer, sizeof(buffer));
         if (n <= 0) {
             if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
@@ -35,16 +35,15 @@ static void* pty_read_loop(void* args) {
             break; // EOF or error
         }
         
-        // Copy the callback pointer and running state under mutex protection
+        // Copy the callback pointer under mutex protection
         // This prevents calling the callback after it's been closed
         pthread_mutex_t* mutex = (pthread_mutex_t*)ctx->mutex;
         pthread_mutex_lock(mutex);
-        int is_running = ctx->running;
         PtyDataCallback callback = ctx->callback;
         pthread_mutex_unlock(mutex);
         
         // Now perform the allocation and callback invocation outside the critical section
-        if (is_running && callback != NULL) {
+        if (callback != NULL) {
             uint8_t* out = (uint8_t*)malloc(n);
             if (out != NULL) {
                 memcpy(out, buffer, n);
@@ -175,11 +174,12 @@ static void* pty_exit_monitor(void* args) {
     ctx->has_exited = 1;
     ctx->exit_code = exit_code;
     int should_fire_exit = ctx->read_finished;
+    PtyExitCallback exit_callback = ctx->exit_callback;
     pthread_mutex_unlock(mutex);
     
     // If reader finished first, we fire the callback now
-    if (should_fire_exit && ctx->exit_callback != NULL) {
-        ctx->exit_callback(exit_code);
+    if (should_fire_exit && exit_callback != NULL) {
+        exit_callback(exit_code);
     }
     
     return NULL;
@@ -604,7 +604,8 @@ void pty_close(PtyContext* ctx) {
         return;
     }
     
-    ctx->running = 0;
+    // Set running to 0 using atomic store
+    atomic_store(&ctx->running, 0);
     
     // Close the master FD to trigger thread exit
     if (ctx->master_fd >= 0) {

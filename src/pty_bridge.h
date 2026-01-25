@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdatomic.h>
 
 // Terminal mode enum
 enum PtyMode {
@@ -21,7 +22,7 @@ typedef void (*PtyExitCallback)(int32_t exit_code);
 typedef struct {
     int master_fd;
     int pid;
-    int running;
+    _Atomic int running;
     int mode;  // Current terminal mode
     PtyDataCallback callback;
     PtyExitCallback exit_callback;
