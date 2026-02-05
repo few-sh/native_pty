@@ -217,6 +217,8 @@ class NativePty {
       _utf8Sink.close();
       _controller.close();
       _dataController.close();
+
+      _nativeExitCallback.close();
     }
   }
 
