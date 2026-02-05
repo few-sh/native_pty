@@ -159,6 +159,7 @@ class NativePty {
       StreamController<Uint8List>();
   late final ByteConversionSink _utf8Sink;
   final Completer<int> _exitCodeCompleter = Completer<int>();
+  bool _exited = false;
   bool _closed = false;
   final bool _autoDecodeUtf8;
 
@@ -193,12 +194,10 @@ class NativePty {
       final bytes = data.asTypedList(length);
       // Use chunked UTF-8 decoder to handle multi-byte characters split across buffers
       // The decoder maintains state and will buffer incomplete sequences
-      if (!_closed) {
-        if (_autoDecodeUtf8) {
-          _utf8Sink.add(bytes);
-        } else {
-          _dataController.add(Uint8List.fromList(bytes));
-        }
+      if (_autoDecodeUtf8) {
+        _utf8Sink.add(bytes);
+      } else {
+        _dataController.add(Uint8List.fromList(bytes));
       }
     } finally {
       // CRITICAL: Free the C memory now that Dart has copied it
@@ -210,7 +209,7 @@ class NativePty {
   void _onExit(int exitCode) {
     if (!_exitCodeCompleter.isCompleted) {
       // Mark as closed since process has exited - operations should fail now
-      _closed = true;
+      _exited = true;
       _exitCodeCompleter.complete(exitCode);
 
       // Close the streams to signal that no more data will come
@@ -330,6 +329,9 @@ class NativePty {
   /// Returns the number of bytes written.
   /// Throws [PtyException] on error.
   int write(String data) {
+    if (_exited) {
+      throw StateError('Process has exited');
+    }
     if (_closed) {
       throw StateError('PTY is closed');
     }
@@ -345,6 +347,9 @@ class NativePty {
   /// Returns the number of bytes written.
   /// Throws [PtyException] on error.
   int writeBytes(Uint8List data) {
+    if (_exited) {
+      throw StateError('Process has exited');
+    }
     if (_closed) {
       throw StateError('PTY is closed');
     }
@@ -375,6 +380,9 @@ class NativePty {
   ///
   /// Throws [PtyException] on error.
   void resize(int rows, int cols) {
+    if (_exited) {
+      throw StateError('Process has exited');
+    }
     if (_closed) {
       throw StateError('PTY is closed');
     }
@@ -397,6 +405,9 @@ class NativePty {
   ///
   /// Throws [PtyException] on error.
   void kill([int? signal]) {
+    if (_exited) {
+      throw StateError('Process has exited');
+    }
     if (_closed) {
       throw StateError('PTY is closed');
     }
@@ -444,6 +455,9 @@ class NativePty {
   ///
   /// Throws [PtyException] on error.
   void setMode(TerminalMode mode) {
+    if (_exited) {
+      throw StateError('Process has exited');
+    }
     if (_closed) {
       throw StateError('PTY is closed');
     }
@@ -459,6 +473,9 @@ class NativePty {
   /// Returns the current [TerminalMode].
   /// Throws [PtyException] on error.
   TerminalMode getMode() {
+    if (_exited) {
+      throw StateError('Process has exited');
+    }
     if (_closed) {
       throw StateError('PTY is closed');
     }
@@ -495,7 +512,6 @@ class NativePty {
     }
 
     _closed = true;
-
     _ptyClose(_context);
 
     // Close the UTF-8 sink to flush any pending bytes

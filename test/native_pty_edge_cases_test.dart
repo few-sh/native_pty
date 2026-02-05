@@ -34,6 +34,40 @@ void main() {
       },
     );
 
+    test('handled interactive command execution followed by an exit', () async {
+      final pty = NativePty.spawn('/bin/bash', ['/bin/bash', '-i']);
+
+      final output = StringBuffer();
+      final completer = Completer<void>();
+
+      pty.stream.listen(
+        (data) {
+          output.write(data);
+          if (output.toString().contains('dummy command')) {}
+        },
+        onDone: () {
+          completer.complete();
+        },
+      );
+
+      // Write a command that produces output
+      final command = '''
+echo "Running dummy command"
+''';
+      pty.write('$command\n');
+      pty.write('exit\n');
+
+      final exitCode = await pty.exitCode;
+
+      // Wait for process to exit
+      await completer.future;
+
+      expect(exitCode, equals(0));
+      expect(output.toString(), contains('Running dummy command'));
+
+      pty.close();
+    });
+
     test('handles rapid spawn and close cycles', () async {
       // Rapidly create and destroy PTY instances
       for (int i = 0; i < 50; i++) {
