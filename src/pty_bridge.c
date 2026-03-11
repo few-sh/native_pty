@@ -587,6 +587,23 @@ int pty_kill(PtyContext* ctx, int signal) {
     return -1;
 }
 
+// Send a signal to only the foreground process group of the PTY.
+// This targets the running job (e.g. bash -c, sleep, python) without
+// affecting the interactive shell itself, so the session stays alive.
+int pty_signal_foreground(PtyContext* ctx, int signal) {
+    if (ctx == NULL || ctx->master_fd < 0) {
+        return -1;
+    }
+    
+    pid_t fg_pgid = tcgetpgrp(ctx->master_fd);
+    if (fg_pgid > 0) {
+        // Send signal to the entire foreground process group
+        return kill(-fg_pgid, signal) == 0 ? 0 : -1;
+    }
+    
+    return -1;
+}
+
 // Set the terminal mode
 int pty_set_mode(PtyContext* ctx, int mode) {
     if (ctx == NULL || ctx->master_fd < 0) {

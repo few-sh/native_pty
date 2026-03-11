@@ -57,6 +57,11 @@ int pty_resize(PtyContext* ctx, int rows, int cols);
 // Returns 0 on success, -1 on error
 int pty_kill(PtyContext* ctx, int signal);
 
+// Send a signal to only the foreground process group of the PTY.
+// Uses tcgetpgrp() to target the correct job without affecting the shell.
+// Returns 0 on success, -1 on error.
+int pty_signal_foreground(PtyContext* ctx, int signal);
+
 // Set the terminal mode
 // Returns 0 on success, -1 on error
 int pty_set_mode(PtyContext* ctx, int mode);

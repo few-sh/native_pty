@@ -1,6 +1,7 @@
 import 'package:native_pty/native_pty.dart';
 import 'package:test/test.dart';
 import 'dart:io';
+import 'dart:typed_data';
 
 void main() {
   group('NativePty', () {
@@ -781,6 +782,80 @@ void main() {
 
       // Check utf8 data is empty
       expect(utf8DataOptions, isEmpty);
+    });
+
+    test(
+      'signalForeground interrupts foreground job but keeps shell alive',
+      () async {
+        // Spawn an interactive shell
+        final pty = NativePty.spawn('/bin/bash', ['/bin/bash', '-i']);
+
+        final outputBuffer = StringBuffer();
+        pty.stream.listen((data) {
+          outputBuffer.write(data);
+        });
+
+        // Wait for shell to start
+        await Future.delayed(Duration(milliseconds: 500));
+
+        // Run a long-running foreground command
+        pty.write('sleep 300\n');
+        await Future.delayed(Duration(milliseconds: 500));
+
+        // Signal SIGINT to the foreground process group only
+        pty.signalForeground(ProcessSignal.sigint.signalNumber);
+
+        // Wait for the interrupt to take effect
+        await Future.delayed(Duration(milliseconds: 500));
+
+        // Shell should still be alive — verify by running another command
+        pty.write('echo "shell_still_alive"\n');
+        await Future.delayed(Duration(milliseconds: 500));
+
+        expect(outputBuffer.toString(), contains('shell_still_alive'));
+
+        pty.close();
+      },
+    );
+
+    test('signalForeground works in raw mode', () async {
+      // Spawn a shell in canonical mode, then switch it to raw mode
+      // (bash -i sets its own terminal modes on startup; we need the shell
+      // running first, then switch to raw before starting the foreground job)
+      final pty = NativePty.spawn('/bin/bash', ['/bin/bash', '-i']);
+
+      final outputBuffer = StringBuffer();
+      pty.stream.listen((data) {
+        outputBuffer.write(data);
+      });
+
+      // Wait for shell to start
+      await Future.delayed(Duration(milliseconds: 500));
+
+      // Switch terminal to raw mode from the Dart side
+      pty.setMode(TerminalMode.raw);
+
+      // Run a long-running foreground command
+      pty.write('sleep 300\n');
+      await Future.delayed(Duration(milliseconds: 500));
+
+      // In raw mode, ISIG is off so writing \x03 alone would do nothing.
+      // signalForeground uses kill() to deliver the signal directly.
+      pty.signalForeground(ProcessSignal.sigint.signalNumber);
+
+      // Wait for the interrupt to take effect
+      await Future.delayed(Duration(milliseconds: 500));
+
+      // Switch back to canonical so we get normal echo
+      pty.setMode(TerminalMode.canonical);
+
+      // Shell should still be alive — verify by running another command
+      pty.write('echo "raw_mode_alive"\n');
+      await Future.delayed(Duration(milliseconds: 500));
+
+      expect(outputBuffer.toString(), contains('raw_mode_alive'));
+
+      pty.close();
     });
   });
 }

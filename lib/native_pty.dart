@@ -119,6 +119,11 @@ external int _ptyResize(ffi.Pointer<PtyContext> ctx, int rows, int cols);
 external int _ptyKill(ffi.Pointer<PtyContext> ctx, int signal);
 
 @ffi.Native<ffi.Int32 Function(ffi.Pointer<PtyContext>, ffi.Int32)>(
+  symbol: 'pty_signal_foreground',
+)
+external int _ptySignalForeground(ffi.Pointer<PtyContext> ctx, int signal);
+
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<PtyContext>, ffi.Int32)>(
   symbol: 'pty_set_mode',
 )
 external int _ptySetMode(ffi.Pointer<PtyContext> ctx, int mode);
@@ -443,6 +448,47 @@ class NativePty {
     final result = _ptyKill(_context, sig);
     if (result < 0) {
       throw PtyException('Failed to send signal $sig to PTY process');
+    }
+  }
+
+  /// Sends a signal to only the foreground process group of the PTY.
+  ///
+  /// Uses `tcgetpgrp()` to identify the foreground job and sends the signal
+  /// to that process group only, leaving the shell session alive.
+  ///
+  /// Falls back to writing the corresponding terminal control character
+  /// if the direct signal fails.
+  ///
+  /// [signal] is the signal number to send.
+  ///
+  /// Throws [PtyException] on error.
+  void signalForeground(int signal) {
+    if (_exited) {
+      throw StateError('Process has exited');
+    }
+    if (_closed) {
+      throw StateError('PTY is closed');
+    }
+
+    // Try direct signal via kill() to the foreground process group first.
+    // This works regardless of terminal mode (canonical/raw) and avoids
+    // a race condition where writing \x03 kills the foreground group
+    // before tcgetpgrp() can identify it.
+    final result = _ptySignalForeground(_context, signal);
+    if (result == 0) return;
+
+    // Fallback: write the corresponding control character to the PTY master.
+    // This works when the TTY line discipline has ISIG enabled.
+    if (signal == ProcessSignal.sigint.signalNumber) {
+      writeBytes(Uint8List.fromList([0x03])); // Ctrl-C
+    } else if (signal == ProcessSignal.sigquit.signalNumber) {
+      writeBytes(Uint8List.fromList([0x1c])); // Ctrl-backslash
+    } else if (signal == ProcessSignal.sigtstp.signalNumber) {
+      writeBytes(Uint8List.fromList([0x1a])); // Ctrl-Z
+    } else {
+      throw PtyException(
+        'Failed to send signal $signal to foreground process group',
+      );
     }
   }
 
