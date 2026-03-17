@@ -20,6 +20,26 @@
 
 extern char **environ;
 
+// Called when a thread finishes. If pty_close has been called (closing=1),
+// the last thread to finish frees the context. Otherwise does nothing.
+static void pty_thread_finished(PtyContext* ctx) {
+    pthread_mutex_t* mutex = (pthread_mutex_t*)ctx->mutex;
+    pthread_mutex_lock(mutex);
+    ctx->threads_done++;
+    int should_free = ctx->closing && (ctx->threads_done >= 2);
+    pthread_mutex_unlock(mutex);
+    
+    if (should_free) {
+        // Both threads are done and pty_close was called — clean up
+        if (ctx->pid > 0) {
+            waitpid(ctx->pid, NULL, WNOHANG);
+        }
+        pthread_mutex_destroy(mutex);
+        free(mutex);
+        free(ctx);
+    }
+}
+
 // Thread function for reading PTY output
 static void* pty_read_loop(void* args) {
     PtyContext* ctx = (PtyContext*)args;
@@ -68,6 +88,7 @@ static void* pty_read_loop(void* args) {
         exit_callback(code);
     }
     
+    pty_thread_finished(ctx);
     return NULL;
 }
 
@@ -184,6 +205,7 @@ static void* pty_exit_monitor(void* args) {
         exit_callback(exit_code);
     }
     
+    pty_thread_finished(ctx);
     return NULL;
 }
 
@@ -645,61 +667,80 @@ int pty_get_mode(PtyContext* ctx) {
     return ctx->mode;
 }
 
-// Close and cleanup the PTY
+// Close and cleanup the PTY (non-blocking).
+//
+// Closes the master fd, which causes the kernel to send SIGHUP to the shell
+// (the natural PTY close mechanism, same as closing a terminal window).
+// The reader and exit-monitor threads will finish on their own:
+//   - Reader sees EOF from closed master fd
+//   - Shell exits from SIGHUP, monitor reaps it, exit-monitor reads exit code
+// The last thread to finish frees the context (via pty_thread_finished).
+//
+// Nulls out callbacks under mutex so threads won't call into Dart after close.
 void pty_close(PtyContext* ctx) {
     if (ctx == NULL) {
         return;
     }
     
-    pthread_t current_thread = pthread_self();
-    
-    // Step 1: Stop accepting new operations
     atomic_store(&ctx->running, 0);
     
-    // Step 2: Close the master FD. This is the natural PTY close mechanism:
+    pthread_mutex_t* mutex = (pthread_mutex_t*)ctx->mutex;
+    pthread_mutex_lock(mutex);
+    
+    // Null out callbacks so threads don't call into Dart after close
+    ctx->callback = NULL;
+    ctx->exit_callback = NULL;
+    
+    // Save thread handles and master_fd to local variables, then clear them
+    // in ctx. After we set closing=1 and unlock, a finishing thread may free
+    // ctx at any moment, so we must not touch ctx after unlock.
+    pthread_t reader_thread = (pthread_t)ctx->thread;
+    pthread_t exit_thread_handle = (pthread_t)ctx->exit_thread;
+    int has_reader = (ctx->thread != NULL);
+    int has_exit = (ctx->exit_thread != NULL);
+    int master_fd = ctx->master_fd;
+    pid_t pid = ctx->pid;
+    
+    ctx->thread = NULL;
+    ctx->exit_thread = NULL;
+    ctx->master_fd = -1;
+    
+    // Mark as closing. After unlock, ctx may be freed by a finishing thread.
+    ctx->closing = 1;
+    int already_done = ctx->threads_done;
+    
+    pthread_mutex_unlock(mutex);
+    
+    // From here on, ONLY use local variables — ctx may be freed at any moment.
+    
+    // Detach threads so they clean up on their own
+    if (has_reader) {
+        pthread_detach(reader_thread);
+    }
+    if (has_exit) {
+        pthread_detach(exit_thread_handle);
+    }
+    
+    // Close the master fd. This is the natural PTY close mechanism:
     // the kernel sends SIGHUP to the child's foreground process group (since
     // the child called setsid() + TIOCSCTTY, making this PTY its controlling
     // terminal). The shell exits, just like closing a terminal window.
-    // The reader thread also sees EOF and exits.
-    if (ctx->master_fd >= 0) {
-        close(ctx->master_fd);
-        ctx->master_fd = -1;
+    // The reader thread sees EOF and exits.
+    if (master_fd >= 0) {
+        close(master_fd);
     }
     
-    // Step 3: Wait for reader thread to finish draining data.
-    // It exits when read() returns 0 (EOF from closed master fd).
-    pthread_t reader_thread = (pthread_t)ctx->thread;
-    if (ctx->thread != NULL) {
-        if (pthread_equal(current_thread, reader_thread)) {
-            pthread_detach(reader_thread);
-        } else {
-            pthread_join(reader_thread, NULL);
+    // If both threads already finished before we set closing=1, they
+    // didn't free ctx (they saw closing=0). We must do it.
+    if (already_done >= 2) {
+        if (pid > 0) {
+            waitpid(pid, NULL, WNOHANG);
         }
+        pthread_mutex_destroy(mutex);
+        free(mutex);
+        free(ctx);
     }
-    
-    // Step 4: Wait for the exit monitoring thread to finish.
-    // Shell receives SIGHUP from master close and exits naturally:
-    //   Linux: monitor reaps shell via waitpid → writes exit code to pipe → thread reads and exits
-    //   macOS: kqueue detects process exit → thread exits
-    pthread_t exit_thread = (pthread_t)ctx->exit_thread;
-    if (ctx->exit_thread != NULL) {
-        if (pthread_equal(current_thread, exit_thread)) {
-            pthread_detach(exit_thread);
-        } else {
-            pthread_join(exit_thread, NULL);
-        }
-    }
-    
-    // Step 5: Reap direct child if applicable (macOS with posix_spawn)
-    if (ctx->pid > 0) {
-        waitpid(ctx->pid, NULL, WNOHANG);
-    }
-    
-    // Step 6: Clean up
-    pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
-    free(ctx->mutex);
-    
-    free(ctx);
+    // Otherwise, the last thread to finish will free ctx via pty_thread_finished.
 }
 
 // Get the exit code of the process (blocks until process exits)

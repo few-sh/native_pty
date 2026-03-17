@@ -35,6 +35,8 @@ typedef struct {
     int has_exited;
     int read_finished;
     int exit_fd;        // Pipe file descriptor to read exit code (Linux Double-Fork)
+    int closing;        // Set by pty_close to indicate async cleanup
+    int threads_done;   // Count of threads that have finished (0, 1, or 2)
 } PtyContext;
 
 // Initialize the PTY system (sets up signal handlers)

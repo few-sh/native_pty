@@ -553,21 +553,32 @@ class NativePty {
 
   /// Closes the PTY and cleans up resources.
   ///
-  /// This will terminate the child process and close the PTY.
+  /// This triggers SIGHUP to the child process (same as closing a terminal
+  /// window) and returns immediately. The child process and threads clean
+  /// up asynchronously.
   void close() {
     if (_closed) {
       return;
     }
 
     _closed = true;
+    // Non-blocking: closes master fd (triggers SIGHUP), nulls out C-side
+    // callbacks under mutex, detaches threads. Threads clean up on their own.
     _ptyClose(_context);
 
-    // Close the UTF-8 sink to flush any pending bytes
+    // Safe to close NativeCallables now — C side has nulled its pointers
+    // under mutex so the native threads won't call them anymore.
     _utf8Sink.close();
     _controller.close();
     _dataController.close();
     _nativeCallback.close();
     _nativeExitCallback.close();
+
+    // Complete exitCode if not already done — the C-side exit callback was
+    // nulled out so _onExit won't be called for this PTY anymore.
+    if (!_exitCodeCompleter.isCompleted) {
+      _exitCodeCompleter.complete(-1);
+    }
   }
 }
 
