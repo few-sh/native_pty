@@ -656,48 +656,43 @@ void pty_close(PtyContext* ctx) {
     // Step 1: Stop accepting new operations
     atomic_store(&ctx->running, 0);
     
-    // Step 2: Close the master FD to signal EOF to child
-    // This causes the child to exit, and when it closes its PTY end, 
-    // the reader will see EOF and exit naturally
+    // Step 2: Close the master FD. This is the natural PTY close mechanism:
+    // the kernel sends SIGHUP to the child's foreground process group (since
+    // the child called setsid() + TIOCSCTTY, making this PTY its controlling
+    // terminal). The shell exits, just like closing a terminal window.
+    // The reader thread also sees EOF and exits.
     if (ctx->master_fd >= 0) {
         close(ctx->master_fd);
         ctx->master_fd = -1;
     }
     
-    // Step 3: Wait for reader thread to finish draining all data
-    // It will exit when it sees EOF (read returns 0)
+    // Step 3: Wait for reader thread to finish draining data.
+    // It exits when read() returns 0 (EOF from closed master fd).
     pthread_t reader_thread = (pthread_t)ctx->thread;
     if (ctx->thread != NULL) {
         if (pthread_equal(current_thread, reader_thread)) {
-            // Called from within reader thread - detach and let it exit naturally
             pthread_detach(reader_thread);
         } else {
-            // Called from different thread - wait for reader to finish
             pthread_join(reader_thread, NULL);
         }
     }
     
-    // Step 4: Kill the process if still running (shouldn't happen normally)
-    if (ctx->pid > 0) {
-        int status;
-        pid_t result = waitpid(ctx->pid, &status, WNOHANG);
-        if (result == 0) {
-            // Still running, force kill
-            kill(ctx->pid, SIGKILL);
-            waitpid(ctx->pid, &status, 0);
-        }
-    }
-    
-    // Step 5: Wait for the exit monitoring thread to finish
+    // Step 4: Wait for the exit monitoring thread to finish.
+    // Shell receives SIGHUP from master close and exits naturally:
+    //   Linux: monitor reaps shell via waitpid → writes exit code to pipe → thread reads and exits
+    //   macOS: kqueue detects process exit → thread exits
     pthread_t exit_thread = (pthread_t)ctx->exit_thread;
     if (ctx->exit_thread != NULL) {
         if (pthread_equal(current_thread, exit_thread)) {
-            // Called from within exit thread - detach
             pthread_detach(exit_thread);
         } else {
-            // Wait for exit thread to finish
             pthread_join(exit_thread, NULL);
         }
+    }
+    
+    // Step 5: Reap direct child if applicable (macOS with posix_spawn)
+    if (ctx->pid > 0) {
+        waitpid(ctx->pid, NULL, WNOHANG);
     }
     
     // Step 6: Clean up
