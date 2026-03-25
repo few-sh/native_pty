@@ -9,6 +9,7 @@
 #ifdef __APPLE__
 #include <util.h>
 #include <sys/event.h>
+#include <TargetConditionals.h>
 #else
 #include <pty.h>
 #endif
@@ -460,7 +461,7 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     posix_spawn_file_actions_addclose(&actions, ctx->master_fd);
     
     if (cwd != NULL) {
-        #if defined(__APPLE__)
+        #if defined(__APPLE__) && !TARGET_OS_IOS
         posix_spawn_file_actions_addchdir(&actions, cwd);
         #endif
     }
