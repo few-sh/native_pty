@@ -1,7 +1,6 @@
 import 'package:native_pty/native_pty.dart';
 import 'package:test/test.dart';
 import 'dart:io';
-import 'dart:typed_data';
 
 void main() {
   group('NativePty', () {
@@ -281,7 +280,7 @@ void main() {
       pty.close();
     });
 
-    test('correctly kills a process with SIGQUIT (Ctrl-\)', () async {
+    test('correctly kills a process with SIGQUIT (Ctrl+C)', () async {
       final pty = NativePty.spawn('/bin/bash', ['/bin/bash', '-i']);
 
       // Sleep in foreground

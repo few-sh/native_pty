@@ -102,15 +102,10 @@ echo "Running dummy command"
           'echo "quick"; exit 0',
         ]);
 
-        var exitCodeCompleted = false;
         pty.stream.listen((_) {});
 
         // Race: try to close right when process exits
-        unawaited(
-          pty.exitCode.then((_) {
-            exitCodeCompleted = true;
-          }),
-        );
+        unawaited(pty.exitCode.then((_) {}));
 
         // Wait a bit then close
         await Future.delayed(Duration(milliseconds: 50));
