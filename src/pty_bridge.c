@@ -32,9 +32,15 @@ static void pty_thread_finished(PtyContext* ctx) {
     
     if (should_free) {
         // Both threads are done and pty_close was called — clean up
+#ifdef __linux__
+        if (ctx->monitor_pid > 0) {
+            waitpid(ctx->monitor_pid, NULL, WNOHANG);
+        }
+#else
         if (ctx->pid > 0) {
             waitpid(ctx->pid, NULL, WNOHANG);
         }
+#endif
         pthread_mutex_destroy(mutex);
         free(mutex);
         free(ctx);
@@ -269,6 +275,8 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     ctx->exit_callback = exit_callback;
     ctx->running = 1;
     ctx->mode = mode;  // Store the requested mode
+    ctx->pid = -1;
+    ctx->monitor_pid = -1;
     
     // Initialize synchronization primitives - REQUIRED for thread safety
     ctx->mutex = malloc(sizeof(pthread_mutex_t));
@@ -448,6 +456,7 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     }
     
     ctx->pid = shell_pid;
+    ctx->monitor_pid = monitor_pid;
     ctx->exit_fd = exit_pipe[0];
 
 #else
@@ -489,6 +498,7 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     }
     
     ctx->pid = pid;
+    ctx->monitor_pid = -1;
     ctx->exit_fd = -1;
 #endif
     
@@ -701,10 +711,13 @@ void pty_close(PtyContext* ctx) {
     int has_exit = (ctx->exit_thread != NULL);
     int master_fd = ctx->master_fd;
     pid_t pid = ctx->pid;
+    pid_t monitor_pid = ctx->monitor_pid;
     
     ctx->thread = NULL;
     ctx->exit_thread = NULL;
     ctx->master_fd = -1;
+    ctx->pid = -1;
+    ctx->monitor_pid = -1;
     
     // Mark as closing. After unlock, ctx may be freed by a finishing thread.
     ctx->closing = 1;
@@ -734,9 +747,15 @@ void pty_close(PtyContext* ctx) {
     // If both threads already finished before we set closing=1, they
     // didn't free ctx (they saw closing=0). We must do it.
     if (already_done >= 2) {
+#ifdef __linux__
+        if (monitor_pid > 0) {
+            waitpid(monitor_pid, NULL, WNOHANG);
+        }
+#else
         if (pid > 0) {
             waitpid(pid, NULL, WNOHANG);
         }
+#endif
         pthread_mutex_destroy(mutex);
         free(mutex);
         free(ctx);

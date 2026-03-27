@@ -22,6 +22,7 @@ typedef void (*PtyExitCallback)(int32_t exit_code);
 typedef struct {
     int master_fd;
     int pid;
+    int monitor_pid;   // Linux double-fork monitor process PID (direct child)
     _Atomic int running;
     int mode;  // Current terminal mode
     PtyDataCallback callback;
