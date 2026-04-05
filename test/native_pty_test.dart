@@ -1,7 +1,27 @@
-import 'package:native_pty/native_pty.dart';
-import 'package:test/test.dart';
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
+
+import 'package:native_pty/native_pty.dart';
+import 'package:test/test.dart';
+
+/// Waits until [outputBuffer] contains [marker], checking every 50ms.
+/// Times out after [timeout] and throws.
+Future<void> waitForOutput(
+  StringBuffer outputBuffer,
+  String marker, {
+  Duration timeout = const Duration(seconds: 5),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (!outputBuffer.toString().contains(marker)) {
+    if (DateTime.now().isAfter(deadline)) {
+      throw TimeoutException(
+        'Timed out waiting for "$marker" in output: "${outputBuffer.toString()}"',
+      );
+    }
+    await Future.delayed(Duration(milliseconds: 50));
+  }
+}
 
 void main() {
   group('NativePty', () {
@@ -856,6 +876,152 @@ void main() {
       expect(outputBuffer.toString(), contains('raw_mode_alive'));
 
       pty.close();
+    });
+
+    group('echo control', () {
+      test('getEcho returns true after setEcho(true)', () async {
+        final pty = NativePty.spawn('/bin/cat', ['/bin/cat']);
+        await Future.delayed(Duration(milliseconds: 300));
+
+        pty.setEcho(true);
+        expect(pty.getEcho(), isTrue);
+
+        pty.close();
+      });
+
+      test('setEcho disables and enables echo', () async {
+        final pty = NativePty.spawn('/bin/cat', ['/bin/cat']);
+        await Future.delayed(Duration(milliseconds: 300));
+
+        // Disable echo
+        pty.setEcho(false);
+        expect(pty.getEcho(), isFalse);
+
+        // Re-enable echo
+        pty.setEcho(true);
+        expect(pty.getEcho(), isTrue);
+
+        pty.close();
+      });
+
+      test('echo off suppresses echoed input', () async {
+        final pty = NativePty.spawn('/bin/cat', ['/bin/cat']);
+
+        final outputBuffer = StringBuffer();
+        pty.stream.listen((data) {
+          outputBuffer.write(data);
+        });
+
+        await Future.delayed(Duration(milliseconds: 300));
+
+        // Disable echo
+        pty.setEcho(false);
+
+        // Write something — cat will echo it back as output, but the
+        // terminal should NOT add its own echo of the input characters
+        pty.write('secret\n');
+        await Future.delayed(Duration(milliseconds: 500));
+
+        final output = outputBuffer.toString();
+
+        // cat reads "secret\n" and writes it back once as output.
+        // With echo off, the terminal doesn't add an extra copy.
+        // Count occurrences: should be exactly 1 (from cat's stdout).
+        final matches = 'secret'.allMatches(output).length;
+        expect(matches, equals(1));
+
+        pty.close();
+      });
+
+      test('echo on causes input to be echoed', () async {
+        final pty = NativePty.spawn('/bin/cat', ['/bin/cat']);
+
+        final outputBuffer = StringBuffer();
+        pty.stream.listen((data) {
+          outputBuffer.write(data);
+        });
+
+        await Future.delayed(Duration(milliseconds: 300));
+
+        // Echo is on by default — terminal echoes input + cat echoes output
+        pty.write('visible\n');
+        await Future.delayed(Duration(milliseconds: 500));
+
+        final output = outputBuffer.toString();
+
+        // With echo on: terminal echoes "visible\n" + cat writes "visible\n"
+        // So we should see "visible" at least twice
+        final matches = 'visible'.allMatches(output).length;
+        expect(matches, greaterThanOrEqualTo(2));
+
+        pty.close();
+      });
+
+      test('throws StateError on exited process', () async {
+        final pty = NativePty.spawn('/bin/echo', ['/bin/echo', 'hi']);
+        await pty.exitCode;
+
+        expect(() => pty.setEcho(false), throwsStateError);
+        expect(() => pty.getEcho(), throwsStateError);
+      });
+
+      test('throws StateError on closed PTY', () async {
+        final pty = NativePty.spawn('/bin/bash', ['/bin/bash', '-i']);
+        await Future.delayed(Duration(milliseconds: 300));
+        pty.close();
+
+        expect(() => pty.setEcho(false), throwsStateError);
+        expect(() => pty.getEcho(), throwsStateError);
+      });
+
+      test('interactive bash: echo off hides typed input', () async {
+        // Use a bash script with `read` (not interactive readline) because
+        // interactive bash's readline re-sets termios on every prompt,
+        // overriding our echo setting. Plain `read` respects termios as-is.
+        final pty = NativePty.spawn('/bin/bash', [
+          '/bin/bash',
+          '--norc',
+          '--noprofile',
+          '-c',
+          'echo "READY"; read line; echo "GOT:\$line"; '
+              'read line2; echo "GOT:\$line2"',
+        ]);
+
+        final outputBuffer = StringBuffer();
+        pty.stream.listen((data) {
+          outputBuffer.write(data);
+        });
+
+        // Wait for the script to be ready
+        await waitForOutput(outputBuffer, 'READY');
+        outputBuffer.clear();
+
+        // Disable echo, then type input — should NOT see it echoed
+        pty.setEcho(false);
+        expect(pty.getEcho(), isFalse);
+        pty.write('secret_input\n');
+        await waitForOutput(outputBuffer, 'GOT:secret_input');
+
+        final output1 = outputBuffer.toString();
+        // Count: "secret_input" should appear only inside "GOT:secret_input",
+        // not also as a separate terminal echo
+        final matches1 = 'secret_input'.allMatches(output1).length;
+        expect(matches1, equals(1));
+
+        // Re-enable echo, type again — should see it echoed
+        outputBuffer.clear();
+        pty.setEcho(true);
+        expect(pty.getEcho(), isTrue);
+        pty.write('visible_input\n');
+        await waitForOutput(outputBuffer, 'GOT:visible_input');
+
+        final output2 = outputBuffer.toString();
+        // With echo on: terminal echoes "visible_input" + script prints "GOT:visible_input"
+        final matches2 = 'visible_input'.allMatches(output2).length;
+        expect(matches2, greaterThanOrEqualTo(2));
+
+        pty.close();
+      });
     });
   });
 }

@@ -73,6 +73,15 @@ int pty_set_mode(PtyContext* ctx, int mode);
 // Returns the mode value (0, 1, or 2) on success, -1 on error
 int pty_get_mode(PtyContext* ctx);
 
+// Set echo on or off for the PTY
+// enable: 1 to enable echo, 0 to disable
+// Returns 0 on success, -1 on error
+int pty_set_echo(PtyContext* ctx, int enable);
+
+// Get whether echo is currently enabled for the PTY
+// Returns 1 if echo is enabled, 0 if disabled, -1 on error
+int pty_get_echo(PtyContext* ctx);
+
 // Close and cleanup the PTY
 void pty_close(PtyContext* ctx);
 

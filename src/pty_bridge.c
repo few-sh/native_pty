@@ -678,6 +678,46 @@ int pty_get_mode(PtyContext* ctx) {
     return ctx->mode;
 }
 
+// Set echo on or off for the PTY
+int pty_set_echo(PtyContext* ctx, int enable) {
+    if (ctx == NULL || ctx->master_fd < 0) {
+        return -1;
+    }
+    
+    struct termios term_settings;
+    
+    if (tcgetattr(ctx->master_fd, &term_settings) != 0) {
+        return -1;
+    }
+    
+    if (enable) {
+        term_settings.c_lflag |= ECHO | ECHOE | ECHOK | ECHOCTL | ECHOKE;
+    } else {
+        term_settings.c_lflag &= ~(ECHO | ECHOE | ECHOK | ECHOCTL | ECHOKE);
+    }
+    
+    if (tcsetattr(ctx->master_fd, TCSANOW, &term_settings) != 0) {
+        return -1;
+    }
+    
+    return 0;
+}
+
+// Get whether echo is currently enabled for the PTY
+int pty_get_echo(PtyContext* ctx) {
+    if (ctx == NULL || ctx->master_fd < 0) {
+        return -1;
+    }
+    
+    struct termios term_settings;
+    
+    if (tcgetattr(ctx->master_fd, &term_settings) != 0) {
+        return -1;
+    }
+    
+    return (term_settings.c_lflag & ECHO) ? 1 : 0;
+}
+
 // Close and cleanup the PTY (non-blocking).
 //
 // Closes the master fd, which causes the kernel to send SIGHUP to the shell
