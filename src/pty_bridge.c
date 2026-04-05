@@ -441,9 +441,10 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     close(error_pipe[0]);
     
     if (err_read > 0) {
-        // Exec failed
+        // Exec (or chdir) failed — reap the monitor process to avoid zombie
         close(exit_pipe[0]);
         close(ctx->master_fd);
+        waitpid(monitor_pid, NULL, 0);
         pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
         free(ctx->mutex);
         free(ctx);
@@ -455,6 +456,7 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     if (read(exit_pipe[0], &shell_pid, sizeof(pid_t)) != sizeof(pid_t) || shell_pid < 0) {
         close(exit_pipe[0]);
         close(ctx->master_fd);
+        waitpid(monitor_pid, NULL, 0);
         pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
         free(ctx->mutex);
         free(ctx);
