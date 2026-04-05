@@ -89,4 +89,8 @@ void pty_close(PtyContext* ctx);
 void* pty_malloc(size_t size);
 void pty_free(void* ptr);
 
+// Returns the last error message (strerror of current errno)
+// The returned pointer is to a static buffer — do not free it.
+const char* pty_last_error();
+
 #endif // PTY_BRIDGE_H

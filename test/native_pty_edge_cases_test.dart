@@ -598,7 +598,13 @@ echo "Running dummy command"
           '/bin/echo',
           'hello',
         ], workingDirectory: '/nonexistent/directory'),
-        throwsA(isA<PtyException>()),
+        throwsA(
+          isA<PtyException>().having(
+            (e) => e.message,
+            'message',
+            contains('No such file or directory'),
+          ),
+        ),
       );
     });
   });

@@ -823,3 +823,7 @@ void* pty_malloc(size_t size) {
 void pty_free(void* ptr) {
     free(ptr);
 }
+
+const char* pty_last_error() {
+    return strerror(errno);
+}

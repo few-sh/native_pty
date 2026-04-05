@@ -145,6 +145,9 @@ external void _ptyClose(ffi.Pointer<PtyContext> ctx);
 @ffi.Native<ffi.Void Function(ffi.Pointer<ffi.Void>)>(symbol: 'pty_free')
 external void _ptyFree(ffi.Pointer<ffi.Void> ptr);
 
+@ffi.Native<ffi.Pointer<Utf8> Function()>(symbol: 'pty_last_error')
+external ffi.Pointer<Utf8> _ptyLastError();
+
 /// Exception thrown when PTY operations fail.
 class PtyException implements Exception {
   /// The error message describing what went wrong.
@@ -309,7 +312,10 @@ class NativePty {
         pty._nativeCallback.close();
         pty._nativeExitCallback.close();
         pty._controller.close();
-        throw PtyException('Failed to spawn PTY process for command: $command');
+        final errMsg = _ptyLastError().toDartString();
+        throw PtyException(
+          'Failed to spawn PTY process for command: $command ($errMsg)',
+        );
       }
 
       pty._context = context;
