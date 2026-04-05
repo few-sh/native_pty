@@ -381,7 +381,13 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
             dup2(slave_fd, STDERR_FILENO);
             if (slave_fd > STDERR_FILENO) close(slave_fd);
 
-            if (cwd != NULL) chdir(cwd);
+            if (cwd != NULL) {
+                if (chdir(cwd) != 0) {
+                    int err = errno;
+                    ssize_t __attribute__((unused)) n = write(error_pipe[1], &err, sizeof(int));
+                    _exit(1);
+                }
+            }
             
             // We need to set environ manually if we use execvp and want to replace it? 
             // Actually execvp uses current 'environ'. 
@@ -392,7 +398,7 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
             
             // If execvp fails, write errno to error pipe and exit
             int err = errno;
-            write(error_pipe[1], &err, sizeof(int));
+            ssize_t __attribute__((unused)) n = write(error_pipe[1], &err, sizeof(int));
             _exit(1);
         }
         
@@ -402,12 +408,12 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
         
         if (shell_pid < 0) {
              pid_t fail_pid = -1;
-             write(exit_pipe[1], &fail_pid, sizeof(pid_t));
+             ssize_t __attribute__((unused)) n = write(exit_pipe[1], &fail_pid, sizeof(pid_t));
              _exit(1);
         }
 
         // Send Shell PID
-        write(exit_pipe[1], &shell_pid, sizeof(pid_t));
+        ssize_t __attribute__((unused)) n1 = write(exit_pipe[1], &shell_pid, sizeof(pid_t));
 
         // Wait for shell
         int status;
@@ -420,7 +426,7 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
             exit_code = 128 + WTERMSIG(status);
         }
         
-        write(exit_pipe[1], &exit_code, sizeof(int));
+        ssize_t __attribute__((unused)) n2 = write(exit_pipe[1], &exit_code, sizeof(int));
         _exit(0);
     }
 
@@ -750,8 +756,11 @@ void pty_close(PtyContext* ctx) {
     int has_reader = (ctx->thread != NULL);
     int has_exit = (ctx->exit_thread != NULL);
     int master_fd = ctx->master_fd;
-    pid_t pid = ctx->pid;
+#ifdef __linux__
     pid_t monitor_pid = ctx->monitor_pid;
+#else
+    pid_t pid = ctx->pid;
+#endif
     
     ctx->thread = NULL;
     ctx->exit_thread = NULL;
