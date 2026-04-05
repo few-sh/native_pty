@@ -602,7 +602,10 @@ echo "Running dummy command"
           isA<PtyException>().having(
             (e) => e.message,
             'message',
-            contains('No such file or directory'),
+            allOf(
+              contains('failed to exec or chdir in child'),
+              contains('No such file or directory'),
+            ),
           ),
         ),
       );
