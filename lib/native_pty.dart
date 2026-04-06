@@ -131,11 +131,22 @@ external int _ptySetMode(ffi.Pointer<PtyContext> ctx, int mode);
 @ffi.Native<ffi.Int32 Function(ffi.Pointer<PtyContext>)>(symbol: 'pty_get_mode')
 external int _ptyGetMode(ffi.Pointer<PtyContext> ctx);
 
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<PtyContext>, ffi.Int32)>(
+  symbol: 'pty_set_echo',
+)
+external int _ptySetEcho(ffi.Pointer<PtyContext> ctx, int enable);
+
+@ffi.Native<ffi.Int32 Function(ffi.Pointer<PtyContext>)>(symbol: 'pty_get_echo')
+external int _ptyGetEcho(ffi.Pointer<PtyContext> ctx);
+
 @ffi.Native<ffi.Void Function(ffi.Pointer<PtyContext>)>(symbol: 'pty_close')
 external void _ptyClose(ffi.Pointer<PtyContext> ctx);
 
 @ffi.Native<ffi.Void Function(ffi.Pointer<ffi.Void>)>(symbol: 'pty_free')
 external void _ptyFree(ffi.Pointer<ffi.Void> ptr);
+
+@ffi.Native<ffi.Pointer<Utf8> Function()>(symbol: 'pty_last_error')
+external ffi.Pointer<Utf8> _ptyLastError();
 
 /// Exception thrown when PTY operations fail.
 class PtyException implements Exception {
@@ -301,7 +312,10 @@ class NativePty {
         pty._nativeCallback.close();
         pty._nativeExitCallback.close();
         pty._controller.close();
-        throw PtyException('Failed to spawn PTY process for command: $command');
+        final errMsg = _ptyLastError().toDartString();
+        throw PtyException(
+          'Failed to spawn PTY process for command: $command ($errMsg)',
+        );
       }
 
       pty._context = context;
@@ -533,6 +547,51 @@ class NativePty {
       throw PtyException('Failed to get terminal mode');
     }
     return TerminalMode.fromValue(modeValue);
+  }
+
+  /// Enables or disables echo for the PTY.
+  ///
+  /// When echo is enabled, characters typed are echoed back by the terminal.
+  /// When disabled, input is not echoed (useful for password prompts, etc.).
+  ///
+  /// This modifies the ECHO termios flag independently of the terminal mode.
+  ///
+  /// NOTE: This does not work with bash -i because bash takes control of the
+  /// terminal settings and overrides echo. To disable echo in an interactive
+  /// bash session, you can use `stty -echo` command within the shell.
+  ///
+  /// Throws [PtyException] on error.
+  void setEcho(bool enabled) {
+    if (_exited) {
+      throw StateError('Process has exited');
+    }
+    if (_closed) {
+      throw StateError('PTY is closed');
+    }
+
+    final result = _ptySetEcho(_context, enabled ? 1 : 0);
+    if (result < 0) {
+      throw PtyException('Failed to ${enabled ? 'enable' : 'disable'} echo');
+    }
+  }
+
+  /// Gets whether echo is currently enabled for the PTY.
+  ///
+  /// Returns `true` if echo is enabled, `false` if disabled.
+  /// Throws [PtyException] on error.
+  bool getEcho() {
+    if (_exited) {
+      throw StateError('Process has exited');
+    }
+    if (_closed) {
+      throw StateError('PTY is closed');
+    }
+
+    final result = _ptyGetEcho(_context);
+    if (result < 0) {
+      throw PtyException('Failed to get echo state');
+    }
+    return result == 1;
   }
 
   /// Stream of data received from the PTY.

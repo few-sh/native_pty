@@ -18,8 +18,28 @@
 #include <sys/wait.h>
 #include <spawn.h>
 #include <errno.h>
+#include <stdio.h>
 
 extern char **environ;
+
+// Thread-local buffer for last error message, captured before returning NULL
+// so Dart can read it without racing with errno.
+static _Thread_local char last_error[256] = "unknown error";
+
+static void set_last_error(const char* prefix) {
+    const char* msg = strerror(errno);
+    if (prefix != NULL) {
+        snprintf(last_error, sizeof(last_error), "%s: %s", prefix, msg);
+    } else {
+        strncpy(last_error, msg, sizeof(last_error) - 1);
+        last_error[sizeof(last_error) - 1] = '\0';
+    }
+}
+
+static void set_last_error_msg(const char* msg) {
+    strncpy(last_error, msg, sizeof(last_error) - 1);
+    last_error[sizeof(last_error) - 1] = '\0';
+}
 
 // Called when a thread finishes. If pty_close has been called (closing=1),
 // the last thread to finish frees the context. Otherwise does nothing.
@@ -32,9 +52,15 @@ static void pty_thread_finished(PtyContext* ctx) {
     
     if (should_free) {
         // Both threads are done and pty_close was called — clean up
+#ifdef __linux__
+        if (ctx->monitor_pid > 0) {
+            waitpid(ctx->monitor_pid, NULL, WNOHANG);
+        }
+#else
         if (ctx->pid > 0) {
             waitpid(ctx->pid, NULL, WNOHANG);
         }
+#endif
         pthread_mutex_destroy(mutex);
         free(mutex);
         free(ctx);
@@ -256,11 +282,13 @@ static void apply_terminal_mode(struct termios* term_settings, int mode) {
 // Spawn a new process with PTY
 PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[], const char* cwd, int mode, PtyDataCallback callback, PtyExitCallback exit_callback) {
     if (command == NULL || argv == NULL || callback == NULL) {
+        set_last_error_msg("invalid arguments (command, argv, or callback is NULL)");
         return NULL;
     }
     
     PtyContext* ctx = (PtyContext*)malloc(sizeof(PtyContext));
     if (ctx == NULL) {
+        set_last_error_msg("out of memory");
         return NULL;
     }
     
@@ -269,11 +297,14 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     ctx->exit_callback = exit_callback;
     ctx->running = 1;
     ctx->mode = mode;  // Store the requested mode
+    ctx->pid = -1;
+    ctx->monitor_pid = -1;
     
     // Initialize synchronization primitives - REQUIRED for thread safety
     ctx->mutex = malloc(sizeof(pthread_mutex_t));
     if (ctx->mutex == NULL) {
         free(ctx);
+        set_last_error_msg("out of memory");
         return NULL;
     }
     pthread_mutex_init((pthread_mutex_t*)ctx->mutex, NULL);
@@ -307,6 +338,7 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     
     // Create PTY pair
     if (openpty(&ctx->master_fd, &slave_fd, NULL, &term_settings, &win_size) != 0) {
+        set_last_error("failed to open PTY");
         pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
         free(ctx->mutex);
         free(ctx);
@@ -321,6 +353,7 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     // Linux Double-Fork Implementation to avoid Dart VM reaping children
     int exit_pipe[2];
     if (pipe(exit_pipe) != 0) {
+        set_last_error("failed to create exit pipe");
         close(ctx->master_fd);
         close(slave_fd);
         pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
@@ -331,6 +364,7 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     
     int error_pipe[2];
     if (pipe(error_pipe) != 0) {
+        set_last_error("failed to create error pipe");
         close(exit_pipe[0]); close(exit_pipe[1]);
         close(ctx->master_fd);
         close(slave_fd);
@@ -350,6 +384,7 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
         pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
         free(ctx->mutex);
         free(ctx);
+        set_last_error_msg("failed to fork monitor process");
         return NULL;
     }
 
@@ -373,7 +408,13 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
             dup2(slave_fd, STDERR_FILENO);
             if (slave_fd > STDERR_FILENO) close(slave_fd);
 
-            if (cwd != NULL) chdir(cwd);
+            if (cwd != NULL) {
+                if (chdir(cwd) != 0) {
+                    int err = errno;
+                    ssize_t __attribute__((unused)) n = write(error_pipe[1], &err, sizeof(int));
+                    _exit(1);
+                }
+            }
             
             // We need to set environ manually if we use execvp and want to replace it? 
             // Actually execvp uses current 'environ'. 
@@ -384,7 +425,7 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
             
             // If execvp fails, write errno to error pipe and exit
             int err = errno;
-            write(error_pipe[1], &err, sizeof(int));
+            ssize_t __attribute__((unused)) n = write(error_pipe[1], &err, sizeof(int));
             _exit(1);
         }
         
@@ -394,12 +435,12 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
         
         if (shell_pid < 0) {
              pid_t fail_pid = -1;
-             write(exit_pipe[1], &fail_pid, sizeof(pid_t));
+             ssize_t __attribute__((unused)) n = write(exit_pipe[1], &fail_pid, sizeof(pid_t));
              _exit(1);
         }
 
         // Send Shell PID
-        write(exit_pipe[1], &shell_pid, sizeof(pid_t));
+        ssize_t __attribute__((unused)) n1 = write(exit_pipe[1], &shell_pid, sizeof(pid_t));
 
         // Wait for shell
         int status;
@@ -412,7 +453,7 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
             exit_code = 128 + WTERMSIG(status);
         }
         
-        write(exit_pipe[1], &exit_code, sizeof(int));
+        ssize_t __attribute__((unused)) n2 = write(exit_pipe[1], &exit_code, sizeof(int));
         _exit(0);
     }
 
@@ -427,13 +468,17 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     close(error_pipe[0]);
     
     if (err_read > 0) {
-        // Exec failed
+        // Exec (or chdir) failed — snapshot the error immediately,
+        // before cleanup calls clobber errno.
+        errno = exec_err;
+        set_last_error("failed to exec or chdir in child");
+        // Reap the monitor process to avoid zombie
         close(exit_pipe[0]);
         close(ctx->master_fd);
+        waitpid(monitor_pid, NULL, 0);
         pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
         free(ctx->mutex);
         free(ctx);
-        errno = exec_err;
         return NULL;
     }
     
@@ -441,13 +486,16 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     if (read(exit_pipe[0], &shell_pid, sizeof(pid_t)) != sizeof(pid_t) || shell_pid < 0) {
         close(exit_pipe[0]);
         close(ctx->master_fd);
+        waitpid(monitor_pid, NULL, 0);
         pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
         free(ctx->mutex);
         free(ctx);
+        set_last_error_msg("failed to read shell PID from monitor");
         return NULL;
     }
     
     ctx->pid = shell_pid;
+    ctx->monitor_pid = monitor_pid;
     ctx->exit_fd = exit_pipe[0];
 
 #else
@@ -479,6 +527,8 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     close(slave_fd);
     
     if (spawn_result != 0) {
+        errno = spawn_result;
+        set_last_error("failed to spawn process");
         close(ctx->master_fd);
         if (ctx->mutex != NULL) {
             pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
@@ -489,6 +539,7 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
     }
     
     ctx->pid = pid;
+    ctx->monitor_pid = -1;
     ctx->exit_fd = -1;
 #endif
     
@@ -500,6 +551,7 @@ PtyContext* pty_spawn(const char* command, char* const argv[], char* const envp[
         pthread_mutex_destroy((pthread_mutex_t*)ctx->mutex);
         free(ctx->mutex);
         free(ctx);
+        set_last_error_msg("failed to create reader thread");
         return NULL;
     }
     
@@ -668,6 +720,46 @@ int pty_get_mode(PtyContext* ctx) {
     return ctx->mode;
 }
 
+// Set echo on or off for the PTY
+int pty_set_echo(PtyContext* ctx, int enable) {
+    if (ctx == NULL || ctx->master_fd < 0) {
+        return -1;
+    }
+    
+    struct termios term_settings;
+    
+    if (tcgetattr(ctx->master_fd, &term_settings) != 0) {
+        return -1;
+    }
+    
+    if (enable) {
+        term_settings.c_lflag |= ECHO | ECHOE | ECHOK | ECHOCTL | ECHOKE;
+    } else {
+        term_settings.c_lflag &= ~(ECHO | ECHOE | ECHOK | ECHOCTL | ECHOKE);
+    }
+    
+    if (tcsetattr(ctx->master_fd, TCSANOW, &term_settings) != 0) {
+        return -1;
+    }
+    
+    return 0;
+}
+
+// Get whether echo is currently enabled for the PTY
+int pty_get_echo(PtyContext* ctx) {
+    if (ctx == NULL || ctx->master_fd < 0) {
+        return -1;
+    }
+    
+    struct termios term_settings;
+    
+    if (tcgetattr(ctx->master_fd, &term_settings) != 0) {
+        return -1;
+    }
+    
+    return (term_settings.c_lflag & ECHO) ? 1 : 0;
+}
+
 // Close and cleanup the PTY (non-blocking).
 //
 // Closes the master fd, which causes the kernel to send SIGHUP to the shell
@@ -700,11 +792,17 @@ void pty_close(PtyContext* ctx) {
     int has_reader = (ctx->thread != NULL);
     int has_exit = (ctx->exit_thread != NULL);
     int master_fd = ctx->master_fd;
+#ifdef __linux__
+    pid_t monitor_pid = ctx->monitor_pid;
+#else
     pid_t pid = ctx->pid;
+#endif
     
     ctx->thread = NULL;
     ctx->exit_thread = NULL;
     ctx->master_fd = -1;
+    ctx->pid = -1;
+    ctx->monitor_pid = -1;
     
     // Mark as closing. After unlock, ctx may be freed by a finishing thread.
     ctx->closing = 1;
@@ -734,9 +832,15 @@ void pty_close(PtyContext* ctx) {
     // If both threads already finished before we set closing=1, they
     // didn't free ctx (they saw closing=0). We must do it.
     if (already_done >= 2) {
+#ifdef __linux__
+        if (monitor_pid > 0) {
+            waitpid(monitor_pid, NULL, WNOHANG);
+        }
+#else
         if (pid > 0) {
             waitpid(pid, NULL, WNOHANG);
         }
+#endif
         pthread_mutex_destroy(mutex);
         free(mutex);
         free(ctx);
@@ -752,4 +856,8 @@ void* pty_malloc(size_t size) {
 
 void pty_free(void* ptr) {
     free(ptr);
+}
+
+const char* pty_last_error() {
+    return last_error;
 }

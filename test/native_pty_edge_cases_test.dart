@@ -586,5 +586,24 @@ echo "Running dummy command"
       // Test passes if no crashes or hangs
       expect(ptys.length, equals(20));
     });
+
+    test('throws PtyException when workingDirectory does not exist', () {
+      expect(
+        () => NativePty.spawn('/bin/echo', [
+          '/bin/echo',
+          'hello',
+        ], workingDirectory: '/nonexistent/directory'),
+        throwsA(
+          isA<PtyException>().having(
+            (e) => e.message,
+            'message',
+            allOf(
+              contains('failed to exec or chdir in child'),
+              contains('No such file or directory'),
+            ),
+          ),
+        ),
+      );
+    });
   });
 }
